@@ -1,0 +1,3231 @@
+# Workspace ----
+rm(list = ls())
+setwd("~/Dropbox/Papers/UCR/UCR_09.23")
+
+library(pacman)
+pacman::p_load(
+  tidyverse, sf, haven, hutils,
+  ggridges, viridis, wesanderson,
+  ggExtra, ggrepel, kableExtra,
+  fixest, fastDummies, sensemakr,
+  cowplot, ggpubr,
+  srvyr, broom,
+  WeightIt,
+  binsreg, wildrwolf,
+  progress, qval
+)
+
+X11(type = "cairo")
+
+theme_clean <- 
+ggthemes::theme_clean() +
+  theme(legend.position = "bottom",
+        plot.background=element_blank(),
+        legend.background = element_rect(color = NA))
+
+theme_set(theme_clean)
+
+select <- dplyr::select
+everything <- dplyr::everything
+
+
+# PERLA color palette ----
+perla_rgb <- col2rgb(c("#fcf2f3", "#f3dfda", "#e7bfb5", "#e4c8a3",
+                                "#bea07e", "#9c7b52", "#83654d", "#6f4f3a",
+                                "#513b2e", "#422811", "#373028"))
+                                
+perla_palette <- function (n, name = c("perla")) {
+  perla = rgb(perla_rgb[1,], perla_rgb[2,], perla_rgb[3,], maxColorValue = 252)
+  name = match.arg(name)
+  orig = eval(parse(text = name))
+  rgb = t(col2rgb(orig))
+  temp = matrix(NA, ncol = 3, nrow = n)
+  x = seq(0, 1, , length(orig))
+  xg = seq(0, 1, , n)
+  for (k in 1:3) {
+    hold = spline(x, rgb[, k], n = n)$y
+    hold[hold < 0] = 0
+    hold[hold > 255] = 255
+    temp[, k] = round(hold)
+  }
+  palette = rgb(temp[, 1], temp[, 2], temp[, 3], maxColorValue = 255)
+  palette
+}
+
+
+# Functions ----
+beta_adj <-
+  function(delta = 1, coef_long = coef_long, coef_short = coef_short, rmax = rmax, cor2_long = cor2_long, cor2_short = cor2_short){
+    
+    beta_adj = coef_long - delta*((coef_short - coef_long)*((rmax - cor2_long)/(cor2_long - cor2_short)))
+    
+    return(beta_adj)
+    
+  }
+
+linear_comb_test <- 
+  function(x, var1, var2){
+    
+    require(fixest)
+    
+    df <- fixest::degrees_freedom(x, "resid")
+    num <- unname(x$coefficients[var2] - x$coefficients[var1])
+    den <- unname(sqrt((x$se[var1])^2 + (x$se[var2])^2 - 2*x$cov.scaled[var1, var2]))
+    t <- abs(num/den)
+    p <- 2*pt(q=t, df=df, lower.tail=FALSE)
+    
+    foo <- 
+      tibble(
+        diff = num,
+        pval = p
+      )
+    
+    return(foo)
+  }
+
+# Specification curve 
+specifications <-
+  function(fixest_multi = fixest_multi, t = "t"){
+    
+    require(fixest, tidy)
+    
+    estimates <- tibble()
+    
+    for(i in 1:length(fixest_multi)){
+      m <- fixest_multi[[i]]
+      
+      # Estimates and Statistics
+      estimates <- 
+        estimates |> 
+        bind_rows(
+          tibble(
+            specification = i,
+            coef = m$coefficients[t],
+            se = m$se[t],
+            nobs = m$nobs,
+            cor2 = m$sq.cor,
+            # pseudor2 = m$pseudo_r2,
+          ) |> 
+            mutate(
+              uci95 = coef + 1.96*se,
+              lci95 = coef - 1.96*se,
+              
+              uci90 = coef + 1.64*se,
+              lci90 = coef - 1.64*se,
+            ) |> 
+            select(specification, coef, se, lci95, uci95, lci90, uci90, nobs, cor2)
+        )
+      
+    }
+    
+    return(estimates)
+    
+  }
+
+spec_curve <- 
+  function(fixest_multi = fixest_multi, t = "t", type = c("ols", "poisson")){
+    
+    require(fixest, tidy)
+    
+    # Estimates and SE
+    specific <- specifications(fixest_multi, t)
+    
+    # Fit-stat panel
+    fit_stats_matrix <- 
+      specific |> 
+      select(specification, nobs, cor2) |> 
+      mutate_if(
+        is.double,
+        funs(as.character(round(., 3)))
+      ) |> 
+      mutate(
+        nobs = as.character(nobs)
+      ) |> 
+      pivot_longer(!specification) |> 
+      mutate(
+        name = case_when(
+          name == "nobs" ~ "No. of Observations",
+          name == "cor2" ~ "Squared Corr.",
+          # name == "pseudor2" ~ "Pseudo R2",
+        )
+      )
+    
+    # Specification panel
+    covariates <- tibble()
+    
+    for(i in 1:length(fixest_multi)){
+      
+      m <- fixest_multi[[i]]
+      
+      if(i == 1){
+        
+        foo <- 
+          tibble(
+            specification = i,
+            covariates = NULL
+          )
+        
+      }else if(i == 2){
+        
+        foo <- 
+          tibble(
+            specification = i,
+            covariates = c(m$fixef_vars)
+          )
+        
+      }else{
+        
+        foo <- 
+          tibble(
+            specification = i,
+            covariates = c(m$fixef_vars, covs_names[1:(i-2)])
+          )
+        
+      }
+      
+      # Covariate names    
+      covariates <- 
+        covariates |> 
+        bind_rows(
+          foo
+        )
+      
+    }
+    
+    covariates_matrix <- 
+      covariates |> 
+      expand(specification, covariates) |> 
+      left_join(
+        covariates |> 
+          mutate(
+            value = "Yes"
+          )
+      ) |> 
+      mutate(
+        value = if_else(is.na(value), "No", value)
+      ) |> 
+      filter(!is.na(covariates)) |> 
+      arrange(
+        specification,
+        factor(covariates, c(m$fixef_vars, covs_names))
+      )  
+    
+    # Bounds
+    
+    coef_short <- specific$coef[1]
+    cor2_short <- specific$cor2[1]
+    
+    coef_long <- specific$coef[nrow(specific)]
+    cor2_long <- specific$cor2[nrow(specific)]
+    
+    adjusted_estimate <-
+      beta_adj(coef_long, coef_short, .8, cor2_long, cor2_short)
+      # coef_long - ((coef_short - coef_long)*((.8 - cor2_long)/(cor2_long - cor2_short)))
+    
+    # Plots
+    
+    # Estimates
+    p1 <- 
+      specific|> 
+      ggplot(aes(specification)) +
+      geom_hline(yintercept = 0) +
+      geom_hline(yintercept = adjusted_estimate, size = 1, alpha = .5, linetype = "dashed") +
+      geom_linerange(color = "grey", aes(y = coef, ymin = lci95, ymax = uci95), size=1.75, alpha = .66) +
+      geom_linerange(color = "grey", aes(y = coef, ymin = lci90, ymax = uci90), size=2.5, alpha = .33) +
+      geom_point(aes(y = coef), size = 3) +
+      # geom_point(aes(y = coef_adj_d.5), color = "yellow", shape = 21, size = 3) +
+      # geom_point(aes(y = coef_adj_d1), color = "blue", shape = 21, size = 3) +
+      # geom_point(aes(y = coef_adj_d2), color = "red", shape = 21, size = 3) +
+      labs(
+        x = "", y = ""
+      ) +
+      scale_x_continuous(breaks = NULL)
+    
+    if(type == "poisson"){
+      
+      p1 <- 
+      p1 #+ scale_y_continuous(labels = scales::percent)
+      
+    }
+    
+    # Fit stats
+    p2 <- 
+      fit_stats_matrix|> 
+      ggplot(aes(specification, name, label = value)) +
+      geom_text(size = 2) +
+      scale_y_discrete(limits=rev) +
+      scale_x_continuous(breaks = NULL) +
+      labs(x = "", y = "") +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        plot.background = element_blank(),
+        text = element_text(size = 6)
+      )
+    
+    # Specification matrix
+    p3 <- 
+      covariates_matrix |> 
+      # filter(!is.na(value))|>
+      ggplot(
+        aes(specification, 
+            factor(covariates, c(m$fixef_vars, covs_names)), 
+            color = value)
+      ) +
+      # geom_tile(lwd = 5, color = "white") +
+      geom_point(size = .75) +
+      scale_color_manual(values = (c("white", "black"))) +
+      scale_y_discrete(limits=rev, labels = c(rev(covs_labels), fe_labels)) +
+      scale_x_continuous(breaks = NULL) +
+      # scale_fill_manual(values = "grey") +
+      labs(x = "", y = "") +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        text = element_text(size = 6)
+      )
+    
+    # Grid with three graphs
+    plot_grid(
+      p1, p2, p3, 
+      nrow = 3, ncol = 1, 
+      align = "v",
+      rel_heights = c(1, 0.3, .5)
+    )
+    
+  }
+
+#
+
+# Setting a dictionary ----
+setFixest_dict(
+  c(
+    # Dependent variable
+    incomepppd = "Daily Income per capita",
+    # Treatment
+    colorr = "Skin tone",
+    # Fixed effects
+    year = "Year FE",
+    countrycode = "Country FE",
+    country_region = "Country region FE",
+    country_prov = "State/Province FE",
+    country_mun = "Municipality FE",
+    cluster_id = "Geographic FE",
+    # Covariates
+    sex = "Sex",
+    age = "Age",
+    ed = "Years of schooling",
+    ocupation = "Employment status",
+    localidad = "Locality size",
+    edocivil = "Marital status",
+    religion = "Religion",
+    etnia = "Ethno-racial identity",
+    remit = "Remittances",
+    colori = "Interviewer's skin tone",
+    intid = "Interviewer FE",
+    mothers_ed = "Mother's education",
+    ocupoit = "ILO Occupation"
+  )
+)
+
+
+# Data ----
+
+lapop <- 
+  tibble(read_rds("~/Dropbox/Papers/UCR/Datos/lapop.Rda"))|> 
+  mutate(
+    colorr = round(colorr),
+    etnia = fct_relevel(
+      etnia, "White", "Mestiza", "Mulata", "Indigenous", "Afro",  "Other"
+    ),
+    etnia2 = case_when(
+      etnia %in% c("Mestiza", "Mulata") ~ "Mestiza & Mulata",
+      TRUE ~ as.character(etnia)
+    ),
+    etnia2 = fct_relevel(
+      etnia2, "White", "Mestiza & Mulata", "Indigenous", "Afro",  "Other"
+    ),
+    age = round(age, 0),
+    incomepppd = incomeppp/30,
+    colori = round(colori),
+    ed = round(ed),
+    poor = if_else(incomepppd <= 2.15, 1, 0),
+    colori_fct = case_when(
+      colori %in% c(1:3) ~ "Light",
+      colori %in% c(4:5) ~ "Brown",
+      colori > 7 ~ "Dark",
+    ),
+    colori_fct = fct_relevel(
+      colori_fct, "Light", "Brown", "Dark"
+    ),
+    
+    year_birth = year - age,
+    year_enter_lbmrkt = pmax(year_birth + 6 + ed, year_birth + 16),
+    cohorte = case_when(
+      year_birth < 1950 ~ "1940",
+      year_birth %in% c(1950:1959) ~ "1950",
+      year_birth %in% c(1960:1969) ~ "1960",
+      year_birth %in% c(1970:1979) ~ "1970",
+      year_birth %in% c(1980:1989) ~ "1980",
+      year_birth >= 1990 ~ "1990",
+    ),
+    grad_student = case_when(
+      ocupation == "Studying" & ed >= 13 ~ 1,
+      TRUE ~ 0
+    ),
+    gdim_sample = case_when(
+      age > 21 | ocupation != "Studying" ~ 1,
+      grad_student == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    ed_isced = case_when(
+      ed < 6 ~ "Less than primary",
+      ed == 6 ~ "Primary",
+      ed %in% c(6:9) ~ "Lower secondary",
+      ed %in% c(9:12) ~ "Upper secondary",
+      ed >= 13 ~ "Tertiary"
+    ),
+    ed_isced = fct_relevel(
+      ed_isced, "Less than primary", "Primary", "Lower secondary", "Upper secondary", "Tertiary"
+    ),
+    mothers_ed_c = case_when(
+      mothers_ed == "None" ~ 0,
+      mothers_ed == "Primary incomplete" ~ 3,
+      mothers_ed == "Primary complete" ~ 6,
+      mothers_ed == "Secondary incomplete" ~ 7.5,
+      mothers_ed == "Secondary complete" ~ 9,
+      mothers_ed == "Technical school/Associate degree incomplete" ~ 10.5,
+      mothers_ed == "Technical school/Associate degree complete" ~ 12,
+      mothers_ed == "University incomplete" ~ 14,
+      mothers_ed == "University complete" ~ 16,
+    ),
+    mothers_ed = fct_relevel(
+      mothers_ed,
+      "None",
+      "Primary incomplete",
+      "Primary complete",
+      "Secondary incomplete",
+      "Secondary complete",
+      "Technical school/Associate degree incomplete",
+      "Technical school/Associate degree complete",
+      "University incomplete",
+      "University complete",
+    ),
+    mothers_ed_isced = case_when(
+      mothers_ed %in% c("None", "Primary incomplete") ~ "Less than primary",
+      mothers_ed %in% c("Primary complete") ~ "Primary",
+      mothers_ed %in% c("Secondary incomplete") ~ "Lower secondary",
+      mothers_ed %in% c("Secondary complete",  "Technical school/Associate degree incomplete", "University incomplete") ~ "Upper secondary",
+      mothers_ed %in% c("Technical school/Associate degree complete", "University complete") ~ "Tertiary",
+    ),
+    mothers_ed_isced = fct_relevel(
+      mothers_ed_isced, 
+      "Less than primary",
+      "Primary",
+      "Lower secondary",
+      "Upper secondary",
+      "Tertiary"
+    )
+  ) |> 
+  group_by(countrycode) |> 
+  mutate(
+    mothers_ed_pct = ntile(mothers_ed_c, 100),
+    ed_pct = ntile(ed, 100),
+    incomeppp_pct = ntile(incomeppp, 100),
+  ) |> 
+  ungroup() |> 
+  group_by(country_region) |> 
+  mutate(
+    mestizo_major = (sum(etnia == "Mestiza", na.rm = T) + sum(etnia == "Mulata", na.rm = T))/n(),
+    white_major = (sum(etnia == "White", na.rm = T))/n(),
+    afro_major = (sum(etnia == "Afro", na.rm = T))/n(),
+    indig_major = (sum(etnia == "Indigenous", na.rm = T))/n(),
+    other_major = (sum(etnia == "Other", na.rm = T))/n(),
+    ethnor_major = case_when(
+      mestizo_major >= .5 ~ "Mestizo majority",
+      white_major >= .5 ~ "White majority",
+      afro_major >= .5 ~ "Afro majority",
+      indig_major >= .5 ~ "Indigenous majority",
+      other_major >= .5 ~ "Other majority",
+      TRUE ~ NA_character_
+    )
+  ) |> 
+  ungroup() |> 
+  glimpse()
+
+#
+
+# Summary statistics ----
+
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |>  
+  select(
+    poor, riq1,
+    incomepppd, cluster_id, weight1500b, colorr,
+    sex, age, ed, ocupation, edocivil, localidad, etnia, religion, colori, 
+    # lengua, 
+    # gov_transf, # cct, #property_status,
+    tam_hog, colori, mothers_ed,
+    countrycode, year, #intid,
+  ) |>  
+  drop_na()
+
+table(foo$year)
+
+
+sumstats_table <- 
+  foo|> 
+  group_by(colorr)|> 
+  summarise(
+    n = n(),
+    zero_income = sum(incomepppd == 0, na.rm = T)/n,
+    poor =  sum(poor == 1, na.rm = T)/n,
+    incomepppd_p25 = quantile(incomepppd, .25, na.rm = T),
+    incomepppd_median = median(incomepppd),
+    incomepppd_mean = mean(incomepppd, na.rm = T),
+    incomepppd_p75 = quantile(incomepppd, .75, na.rm = T),
+    incomepppd_max = max(incomepppd, na.rm = T),
+    
+    female = sum(sex == "Female", na.rm = T)/n,
+    age = mean(age, na.rm = T),
+    ed = mean(ed, na.rm = T),
+    tam_hog = mean(tam_hog, na.rm = T),
+    working = sum(ocupation == "Working", na.rm = T)/n,
+    househwork = sum(ocupation == "Taking_care_of_the_home", na.rm = T)/n,
+    # single = sum(edocivil == "Single", na.rm = T)/n,
+    # married = sum(edocivil == "Married", na.rm = T)/n,
+    # remit = sum(remit == 1, na.rm = T)/n,
+    # gov_transf = sum(gov_transf == 1, na.rm = T)/n,
+  
+    
+    # Locality size
+    metro_area = sum(localidad == "Metropolitan_area", na.rm = T)/n,
+    city_big = sum(localidad == "City_big", na.rm = T)/n,
+    city_medium = sum(localidad == "City_medium", na.rm = T)/n,
+    city_smal = sum(localidad == "City_small", na.rm = T)/n,
+    rural_area = sum(localidad == "Rural_area", na.rm = T)/n,
+    
+    # Ethnicity
+    # lengua = sum(lengua == 1)/n,
+    white = sum(etnia == "White", na.rm = T)/n,
+    mestizo = sum(etnia == "Mestiza", na.rm = T)/n,
+    mulata = sum(etnia == "Mulata", na.rm = T)/n,
+    indig = sum(etnia == "Indigenous", na.rm = T)/n,
+    afro = sum(etnia == "Afro", na.rm = T)/n,
+    other = sum(etnia == "Other", na.rm = T)/n,
+    
+    moed_none = sum(mothers_ed == "None", na.rm = T)/n,
+    moed_primaryi = sum(mothers_ed == "Primary incomplete", na.rm = T)/n,
+    moed_primaryc = sum(mothers_ed == "Primary complete", na.rm = T)/n,
+    moed_secondaryi = sum(mothers_ed == "Secondary incomplete", na.rm = T)/n,
+    moed_secondaryc = sum(mothers_ed == "Secondary complete", na.rm = T)/n,
+    moed_technici = sum(mothers_ed == "Technical school/Associate degree incomplete", na.rm = T)/n,
+    moed_technicc = sum(mothers_ed == "Technical school/Associate degree complete", na.rm = T)/n,
+    moed_univi = sum(mothers_ed == "University incomplete", na.rm = T)/n,
+    moed_univc = sum(mothers_ed == "University complete", na.rm = T)/n,
+    
+    n = n(),
+  ) |> 
+  mutate_if(
+    is.double,
+    funs(round(., 2))
+  ) |> 
+  mutate(
+    n = as.character(round(n)),
+    hex = perla_palette(11)
+  ) |> 
+  select(-n, hex, everything(), n)
+
+sumstats_table_t <- 
+  sumstats_table |> 
+  mutate(
+    colorr = NULL
+  ) |> 
+  t() 
+
+colnames(sumstats_table_t) <- as.character(seq(1,11))
+
+rownames(sumstats_table_t) <- 
+  c(
+    "1[Income = 0] (%)",
+    "1[Income <= 2.15 ] (%)",
+    "Percentile 25",
+    "Median",
+    "Mean",
+    "Percentile 75",
+    "Max",
+    
+    "1[Female] (%)",
+    "Age",
+    "Years of schooling",
+    "People per household",
+    "1[Working] (%)",
+    "1[Household work] (%)",
+    # "1[Gov. transfers] (%)",
+    
+    "1[Metro area] (%)",
+    "1[Big city] (%)",
+    "1[Medium city] (%)",
+    "1[Small city] (%)",
+    "1[Rural area] (%)",
+    
+    "1[White] (%)",
+    "1[Mestiza] (%)",
+    "1[Mulata] (%)",
+    "1[Indigenous] (%)",
+    "1[Afro] (%)",
+    "1[Other] (%)",
+    "1[None] (%)",
+    
+    "1[Primary incomplete] (%)", 
+    "1[Primary complete] (%)",
+    "1[Secondary incomplete] (%)",
+    "1[Secondary complete] (%)", 
+    "1[Technical incomplete] (%)", 
+    "1[Technical complete] (%)", 
+    "1[University incomplete] (%)", 
+    "1[University complete] (%)",
+    
+    "Hexcode",
+    "No. Observations"
+  )
+
+sumstats_table_t |> 
+  kbl(
+    format = "latex", table.envir = "table*",  
+    booktabs = TRUE
+  )
+
+###
+
+# Plots ----
+# Ethnoracial identities 
+lapop %>%
+  filter(!is.na(etnia2)) %>% 
+  mutate(region = str_replace_all(region, "_", " ")) %>% 
+  group_by(etnia2) %>%
+  summarize(n_etnia = n()) %>%
+  mutate(
+    n_total = (lapop %>%
+                 filter(!is.na(etnia2)) %>%
+                 summarize(n = n()))$n
+  ) %>% 
+  mutate(sh_etnia = n_etnia/n_total) %>% 
+  ggplot(aes(etnia2, sh_etnia, color = etnia2)) +
+  geom_col(aes(fill = etnia2), width = .66) +
+  # geom_label(aes(label = scales::percent(sh_etnia, accuracy = .1)), color = "black", size = 3) +
+  scale_fill_viridis(discrete = TRUE, direction = -1) +
+  scale_color_viridis(discrete = TRUE, direction = -1) +
+  scale_y_continuous(breaks = seq(0,.9,.05), labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Ethnoracial identity", y = "Share in population") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "none") 
+
+# Ethnoracial identities and skin tone 
+lapop %>% 
+  filter(!is.na(etnia2)) %>% 
+  filter(!is.na(colorr)) %>% 
+  group_by(etnia2, colorr) %>% 
+  summarize(n = n()) %>% 
+  left_join(lapop %>% 
+              filter(!is.na(etnia2)) %>% 
+              filter(!is.na(colorr)) %>% 
+              group_by(etnia2) %>% 
+              summarize(n_etnia = n())) %>% 
+  mutate(shr = n/n_etnia) %>% 
+  ggplot(aes(etnia2, shr, color = factor(colorr))) + 
+  geom_col(aes(fill = factor(colorr)), position = position_dodge2(width = 0.9, preserve = "single")) +
+  scale_fill_manual(values = perla_palette(n=11)) +
+  scale_color_manual(values = perla_palette(n=11)) +
+  scale_y_continuous(breaks = seq(0,.35,.05), labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Ethnoracial identity", y = "Share of skin tone", fill = "PERLA scale", color = "PERLA scale") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "none")
+
+# Skin tone distribution by country
+lapop %>%   
+  filter(!is.na(colorr)) %>% 
+  mutate(region = str_replace_all(region, "_", " ")) %>% 
+  group_by(countrycode, colorr, region) %>% 
+  summarize(n_color = n()) %>% 
+  left_join(lapop %>% 
+              filter(!is.na(colorr)) %>% 
+              group_by(countrycode) %>% 
+              summarize(n_pais = n())
+  ) %>% 
+  mutate(sh_color = n_color/n_pais,
+         colorr = as.factor(colorr)) %>% 
+  ggplot(aes(countrycode, sh_color, color = colorr)) + 
+  geom_col(aes(fill = colorr), position = position_dodge2(width = 0.9, preserve = "single")) +
+  scale_fill_manual(values = perla_palette(n=11)) +
+  scale_color_manual(values = perla_palette(n=11)) +
+  scale_y_continuous(breaks = seq(0,.4,.05), labels = scales::percent_format()) +
+  labs(x = "", y = "Percentage", fill = "PERLA\nscale", color = "PERLA\nscale") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "none") +
+  #coord_cartesian(ylim = c(0,.3)) +
+  facet_wrap(factor(region) ~., scales = "free",
+             nrow = 3)
+
+# Ethnoracial distribution by country
+lapop %>%
+  filter(!is.na(etnia2)) %>% 
+  mutate(region = str_replace_all(region, "_", " ")) %>% 
+  group_by(countrycode, etnia2, region) %>%
+  summarize(n_etnia = n()) %>%
+  left_join(lapop %>%
+              filter(!is.na(etnia2)) %>% 
+              group_by(countrycode) %>%
+              summarize(n_pais = n())) %>%
+  mutate(sh_etnia = n_etnia/n_pais) %>% 
+  ggplot(aes(countrycode, sh_etnia, color = etnia2)) +
+  geom_col(aes(fill = etnia2), position = position_dodge2(width = 0.9, preserve = "single")) +
+  scale_fill_viridis(discrete = TRUE, direction = -1) +
+  scale_color_viridis(discrete = TRUE, direction = -1) +
+  scale_y_continuous(breaks = seq(0,1,.1), labels = scales::percent_format()) +
+  labs(x = "", y = "Percentage", fill = "Ethno-racial category", color = "Ethno-racial category") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "bottom") + 
+  facet_wrap(factor(region) ~., scales = "free",
+             nrow = 3)
+
+#########################################################
+#### Skin tone gaps  ----
+#########################################################
+## Set macros ----
+
+cov_names <- 
+  c(
+    "sex", "i(age)", "mothers_ed_c_pct"
+  )
+
+covs_labels <- 
+  c(
+    "Age", "Years of schooling", "Mother's education"
+  )
+
+fe_labels <- 
+  c(
+    "Geo. strata x Year x Interviewer ID"
+  )
+
+setFixest_fml(
+  ..skin_tone = ~ colorr_2 + colorr_3 + colorr_4 + colorr_5 +
+    colorr_6 + colorr_7 + colorr_8 + colorr_9,
+  ..covs = ~ sex + i(age) + mothers_ed_c_pct,
+  ..fe = ~ cluster_id^colori^sexi
+)
+
+### Income ----
+# Saturated model: Poisson ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+income <- 
+  fepois(
+    incomepppd ~ mothers_ed_pct + ..skin_tone  
+    | sex + age + cluster_id^colori^sexi,
+    weights = ~ weight1500b,
+    foo, cluster = ~  cluster_id^colori^sexi
+  )
+
+lct_income <- tibble()
+
+range <- length(as.numeric(levels(factor(foo$colorr)))) - 1
+
+for (i in 1:range) {
+  
+  # print(i)
+  
+  if(i == 1){
+    
+    var2 <- paste0("colorr_", i + 1)
+    
+    diff <- (tidy(income) |> 
+               filter(term == var2))$estimate
+    
+    p <-  (tidy(income) |> 
+             filter(term == var2))$p.value
+    
+  }else{
+    
+    var1 <- paste0("colorr_", i)
+    var2 <- paste0("colorr_", i + 1)
+    
+    diff <- linear_comb_test(income, var1, var2)$diff
+    p <- linear_comb_test(income, var1, var2)$pval
+    
+  }
+  
+  lct_income <- 
+    lct_income |> 
+    bind_rows(
+      tibble(
+        term = var2,
+        diff = diff,
+        lctpval = p
+      )
+    )
+  
+}
+
+lct_income <- 
+  lct_income |> 
+  mutate(
+    lctpval_corr =  qval(lctpval, n = nrow(lct_income))
+  )
+
+income_tibble <- 
+  broom::tidy(income) %>%
+  select(term, estimate, std.error) %>%
+  filter(str_detect(term, "colorr")) |> 
+  filter(!(str_detect(term, "mothers_ed_pct"))) |> 
+  left_join(
+    lct_income
+  ) |> 
+  mutate(
+    term = as.numeric(str_remove_all(term, "colorr_")),
+    
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+    
+    lctpval_corr = formatC(lctpval_corr, format="f", digits=3),
+    group1 = term - 1,
+    group2 = term
+  ) |> 
+  bind_rows(
+    tibble(
+      term = 1,
+      estimate = 0
+    )
+  ) |> 
+  arrange(term)
+
+diffs <- round(income_tibble$diff[2:(range + 1)], 3)
+pvals <- income_tibble$lctpval_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+income_tibble |> 
+  ggplot(aes(x = term, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    # labels = scales::percent,
+    breaks = seq(-1, 0, by = .05),
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (semi-elasticity)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = max(income_tibble$uci95, na.rm = T) + 0.025, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = term - .5, y = max(income_tibble$uci95, na.rm = T) + 0.045,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+
+# Household asset index and income ----
+p1 <- 
+  binsreg(
+    log(1 + foo$incomepppd), scale(foo$riq1), 
+    w = ~ factor(countrycode) + factor(year), foo,
+    polyreg = 1,
+    weights = foo$weight1500b
+  )
+
+ggplot() +
+  geom_point(
+    data = p1$data.plot$`Group Full Sample`$data.dots,
+    aes(x, fit), color = "#2A788EFF"
+  ) +
+  geom_line(
+    data = p1$data.plot$`Group Full Sample`$data.poly,
+    aes(x, fit), color = "#2A788EFF"
+  ) +
+  labs(
+    x = "Household asset index (z-score)",
+    y = "log(1 + Daily income per capita)"
+  ) +
+  theme_clean
+
+m1 <- 
+feols(
+  log(1 + incomepppd) ~ scale(riq1) | countrycode + year,
+  foo,
+  cluster = ~ cluster_id,
+  weights = ~ weight1500b
+)
+
+m1
+r2(m1)
+
+# Household asset index (OLS, z-score) ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+income <- 
+  feols(
+    scale(riq1) ~ ..skin_tone + mothers_ed_pct
+    | sex + age + cluster_id^colori^sexi,
+    weights = ~ weight1500b,
+    foo, cluster = ~  cluster_id^colori^sexi)
+
+
+lct_income <- tibble()
+
+range <- length(as.numeric(levels(factor(foo$colorr)))) - 1
+
+for (i in 1:range) {
+  
+  # print(i)
+  
+  if(i == 1){
+    
+    var2 <- paste0("colorr_", i + 1)
+    
+    diff <- (tidy(income) |> 
+               filter(term == var2))$estimate
+    
+    p <-  (tidy(income) |> 
+             filter(term == var2))$p.value
+    
+  }else{
+    
+    var1 <- paste0("colorr_", i)
+    var2 <- paste0("colorr_", i + 1)
+    
+    diff <- linear_comb_test(income, var1, var2)$diff
+    p <- linear_comb_test(income, var1, var2)$pval
+    
+  }
+  
+  lct_income <- 
+    lct_income |> 
+    bind_rows(
+      tibble(
+        term = var2,
+        diff = diff,
+        lctpval = p
+      )
+    )
+  
+  
+}
+
+lct_income <- 
+  lct_income |> 
+  mutate(
+    lctpval_corr =  p.adjust(lctpval, method = "BH", n = nrow(lct_income))
+  )
+
+income_tibble <- 
+  broom::tidy(income) %>%
+  select(term, estimate, std.error) %>%
+  filter(str_detect(term, "colorr")) |> 
+  left_join(
+    lct_income
+  ) |> 
+  mutate(
+    term = as.numeric(str_remove_all(term, "colorr_")),
+    
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+    
+    lctpval_corr = formatC(lctpval_corr, format="f", digits=3),
+    group1 = term - 1,
+    group2 = term
+  ) |> 
+  bind_rows(
+    tibble(
+      term = 1,
+      estimate = 0
+    )
+  ) |> 
+  arrange(term)
+
+diffs <- round(income_tibble$diff[2:(range + 1)], 3)
+pvals <- income_tibble$lctpval_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+income_tibble |> 
+  ggplot(aes(x = term, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    # labels = scales::percent,
+    breaks = seq(-1, 0, by = .05),
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (semi-elasticity)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = max(income_tibble$uci95, na.rm = T) + 0.025, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = term - .5, y = max(income_tibble$uci95, na.rm = T) + 0.045,
+      label = round(diff, 3)
+    ), size = 2.5
+  )
+
+### Years of schooling ----
+# Saturated model: Years of schooling (OLS-z) ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |>
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+ed <- 
+  feols(
+    scale(ed) ~ ..skin_tone  +
+      (sex) + i(age) + mothers_ed_pct
+    | cluster_id^colori^sexi,
+    weights = ~ weight1500b,
+    foo, cluster = ~  cluster_id^colori^sexi)
+
+
+lct_ed <- tibble()
+
+range <- length(as.numeric(levels(factor(foo$colorr)))) - 1
+
+for (i in 1:range) {
+  
+  # print(i)
+  
+  if(i == 1){
+    
+    var2 <- paste0("colorr_", i + 1)
+    
+    diff <- (tidy(ed) |> 
+               filter(term == var2))$estimate
+    
+    p <-  (tidy(ed) |> 
+             filter(term == var2))$p.value
+    
+  }else{
+    
+    var1 <- paste0("colorr_", i)
+    var2 <- paste0("colorr_", i + 1)
+    
+    diff <- linear_comb_test(ed, var1, var2)$diff
+    p <- linear_comb_test(ed, var1, var2)$pval
+    
+  }
+  
+  lct_ed <- 
+    lct_ed |> 
+    bind_rows(
+      tibble(
+        term = var2,
+        diff = diff,
+        lctpval = p
+      )
+    )
+  
+}
+
+lct_ed <- 
+  lct_ed |> 
+  mutate(
+    lctpval_corr =  p.adjust(lctpval, method = "BH", n = nrow(lct_income))
+  )
+
+ed_tibble <- 
+  broom::tidy(ed) %>%
+  select(term, estimate, std.error) %>%
+  filter(str_detect(term, "colorr")) |> 
+  left_join(
+    lct_ed
+  ) |> 
+  mutate(
+    term = as.numeric(str_remove_all(term, "colorr_")),
+    
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+    
+    lctpval_corr = formatC(lctpval_corr, format="f", digits=3),
+    group1 = term - 1,
+    group2 = term
+  ) |> 
+  bind_rows(
+    tibble(
+      term = 1,
+      estimate = 0
+    )
+  ) |> 
+  arrange(term)
+
+diffs <- round(ed_tibble$diff[2:(range + 1)], 3)
+pvals <- ed_tibble$lctpval_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+ed_tibble |> 
+  ggplot(aes(x = term, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    # labels = scales::percent,
+    breaks = seq(-1, 0, by = .05),
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (z-score)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = max(ed_tibble$uci95, na.rm = T) + 0.025, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025
+  ) +
+  geom_text(
+    aes(
+      x = term - .5, y = max(ed_tibble$uci95, na.rm = T) + 0.045,
+      label = round(diff, 3)
+    )
+  )
+
+
+### Educational intergenerational mobility ----
+# Educational intergenerational mobility (level-to-level) ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+ed <- 
+  feols(
+    ed ~ mothers_ed | cluster_id^colori^sexi + sex + age,
+    foo, weights = ~ weight1500b
+  )
+
+mean_ed <- mean(fixef(ed)$`cluster_id^colori^sexi`, na.rm = T)
+
+lct_ed <- tibble()
+
+for (i in 1:length(names(ed$coefficients))) {
+  
+  # print(i)
+  
+  if (i < length(names(ed$coefficients))){
+    
+    var1 <- names(ed$coefficients)[i]
+    var2 <- names(ed$coefficients)[i+1]
+    
+    df <- fixest::degrees_freedom(ed, "resid")
+    diff <- unname(ed$coefficients[var2] - ed$coefficients[var1])
+    den <- unname(sqrt((ed$se[var1])^2 + (ed$se[var2])^2 - 2*ed$cov.unscaled[var1, var2]))
+    t <- abs(diff/den)
+    p <- 2*pt(q=t, df=df, lower.tail=FALSE)
+    
+  }else{
+    
+    var2 <- "mothers_edPrimary incomplete"
+    
+    diff <- (tidy(ed) |> 
+               filter(term == var2))$estimate
+    
+    p <-  (tidy(ed) |> 
+             filter(term == var2))$p.value
+    
+  }
+  
+  lct_ed <- 
+    lct_ed |> 
+    bind_rows(
+      tibble(
+        term = var2,
+        diff = diff,
+        lctpval = p
+      )
+    )
+  
+}
+
+lct_ed <- 
+  lct_ed |> 
+  mutate(
+    lctpval_corr =  p.adjust(lctpval, method = "BH", n = nrow(lct_ed))
+  )
+
+ed_tibble <- 
+  broom::tidy(ed) %>%
+  select(term, estimate, std.error) %>%
+  left_join(
+    lct_ed
+  ) |> 
+  mutate(
+    term = (str_remove_all(term, "mothers_ed")),
+    level = 1:nrow(lct_ed),
+    
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+    
+    lctpval_corr = formatC(lctpval_corr, format="f", digits=3),
+    group1 = level - 1,
+    group2 = level
+  ) |> 
+  bind_rows(
+    tibble(
+      term = "None",
+      estimate = 0,
+      level = 0
+    )
+  ) |> 
+  arrange(level) |> 
+  mutate(
+    term = str_replace_all(term, " ", "\n")
+  ) 
+
+diffs <- round(ed_tibble$diff[2:(range + 1)], 3)
+pvals <- ed_tibble$lctpval_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+ed_tibble |> 
+  ggplot(aes(x = level, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1, color = "#2A788EFF") +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1, color = "#2A788EFF") +
+  geom_point(
+    size = 2,
+    color = "#2A788EFF"
+  ) +
+  scale_x_continuous(
+    breaks = seq(0,8),
+    labels = ed_tibble$term
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 6, by = 1),
+  ) +
+  labs(x = "Mother's educational attaintment", y = "Estimate (years of schooling)") +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 5)
+  ) +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 6,
+    xmin = seq(0.05, 7 + .05, by = 1), xmax = seq(0.95, 7 + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = level - .5, y = 6.5,
+      label = round(diff, 3)
+    ), size = 2.5
+  )
+
+
+
+# Educational intergenerational mobility (rank-to-level) ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+ed <- 
+  feols(
+    ed_pct ~ mothers_ed | cluster_id^colori^sexi + sex + age,
+    foo, weights = ~ weight1500b
+  )
+
+lct_ed <- tibble()
+
+for (i in 1:length(names(ed$coefficients))) {
+  
+  # print(i)
+  
+  if (i < length(names(ed$coefficients))){
+    
+    var1 <- names(ed$coefficients)[i]
+    var2 <- names(ed$coefficients)[i+1]
+    
+    df <- fixest::degrees_freedom(ed, "resid")
+    diff <- unname(ed$coefficients[var2] - ed$coefficients[var1])
+    den <- unname(sqrt((ed$se[var1])^2 + (ed$se[var2])^2 - 2*ed$cov.unscaled[var1, var2]))
+    t <- abs(diff/den)
+    p <- 2*pt(q=t, df=df, lower.tail=FALSE)
+    
+  }else{
+    
+    var2 <- "mothers_edPrimary incomplete"
+    
+    diff <- (tidy(ed) |> 
+               filter(term == var2))$estimate
+    
+    p <-  (tidy(ed) |> 
+             filter(term == var2))$p.value
+    
+  }
+  
+  lct_ed <- 
+    lct_ed |> 
+    bind_rows(
+      tibble(
+        term = var2,
+        diff = diff,
+        lctpval = p
+      )
+    )
+  
+}
+
+lct_ed <- 
+  lct_ed |> 
+  mutate(
+    lctpval_corr =  p.adjust(lctpval, method = "BH", n = nrow(lct_ed))
+  )
+
+ed_tibble <- 
+  broom::tidy(ed) %>%
+  select(term, estimate, std.error) %>%
+  left_join(
+    lct_ed
+  ) |> 
+  mutate(
+    term = (str_remove_all(term, "mothers_ed")),
+    level = 1:nrow(lct_ed),
+    
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+    
+    lctpval_corr = formatC(lctpval_corr, format="f", digits=3),
+    group1 = level - 1,
+    group2 = level
+  ) |> 
+  bind_rows(
+    tibble(
+      term = "None",
+      estimate = 0,
+      level = 0
+    )
+  ) |> 
+  arrange(level) |> 
+  mutate(
+    term = str_replace_all(term, " ", "\n")
+  ) 
+
+diffs <- round(ed_tibble$diff[2:(range + 1)], 3)
+pvals <- ed_tibble$lctpval_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+ed_tibble |> 
+  ggplot(aes(x = level, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1, color = "#2A788EFF") +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1, color = "#2A788EFF") +
+  geom_point(
+    size = 2,
+    color = "#2A788EFF"
+  ) +
+  scale_x_continuous(
+    breaks = seq(0,8),
+    labels = ed_tibble$term
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 35, by = 5),
+  ) +
+  labs(x = "Mother's educational attaintment", y = "Estimate (percentile)") +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 5)
+  ) +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 40,
+    xmin = seq(0.05, 7 + .05, by = 1), xmax = seq(0.95, 7 + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = level - .5, y = 42.5,
+      label = round(diff, 3)
+    ), size = 2.5
+  )
+
+
+# Educational intergenerational mobility (rank-to-rank) ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+social_mob <- 
+  binsreg(
+    y = foo$ed_pct, x = foo$mothers_ed_pct, 
+    w = ~ factor(countrycode) + factor(year) + factor(sex) + age, data=foo,
+    polyreg = 3, binsmethod="rot", nbinsrot = 20
+  )
+
+
+edu_country <- 
+  feols(
+    ed_pct ~ mothers_ed_pct | countrycode + year + sex + age,
+    foo
+  )
+
+mean_edu_country <- mean(fixef(edu_country)$`countrycode`, na.rm = T)
+
+edu_cluster <- 
+  feols(
+    ed_pct ~ mothers_ed_pct | cluster_id^colori^sexi + sex + age,
+    foo
+  )
+
+mean_edu_cluster <- mean(fixef(edu_cluster)$`cluster_id^colori^sexi`, na.rm = T)
+
+ggplot() +
+  geom_point(
+    data = social_mob$data.plot$`Group Full Sample`$data.dots,
+    aes(x, fit), color = "#2A788EFF"
+  ) +
+  geom_line(
+    data = social_mob$data.plot$`Group Full Sample`$data.poly,
+    aes(x, fit), color = "#2A788EFF"
+  )  +
+  theme_clean +
+  labs(
+    x = "Mother's educational percentile rank",
+    y = "Individual's educational percentile rank",
+  ) +
+  coord_cartesian(
+    ylim = c(0,100)
+  ) +
+  geom_label(
+    aes(
+      x = 90, y = 50,
+      label = str_c(
+        "Slope between countries:\n",
+        round(edu_country$coefficients, 3),
+        " (", round(edu_country$se, 3), ")"
+      )
+    ),
+    size = 2, color = "#2A788EFF"
+  ) +
+  geom_label(
+    aes(
+      x = 90, y = 35,
+      label = str_c(
+        "Slope within countries:\n",
+        round(edu_cluster$coefficients, 3),
+        " (", round(edu_cluster$se, 3), ")"
+      )
+    ),
+    size = 2, color = "#2A788EFF"
+  ) 
+
+  
+
+
+### Educational intergenerational mobility (rank-to-rank) by country ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+
+data_points <- tibble()
+data_poly <- tibble()
+data_coefs <- tibble()
+
+for (c in levels(factor(foo$countrycode))) {
+  
+  print(c)
+  
+  foo1 <- 
+    foo |> 
+    filter(countrycode == c)
+  
+  # Binscatter ----
+  social_mob <- 
+    binsreg(
+      y = foo1$ed_pct, x = foo1$mothers_ed_pct, 
+      w = ~ factor(sex) + age, data=foo1,
+      polyreg = 3, binsmethod="rot", nbinsrot = 10
+    )
+  
+  # Join data for plots ----
+  data_points <- 
+    data_points |> 
+    bind_rows(
+      social_mob$data.plot$`Group Full Sample`$data.dots |> 
+        tibble() |> 
+        mutate(group = c)
+    )
+  
+  data_poly <- 
+    data_poly |> 
+    bind_rows(
+      social_mob$data.plot$`Group Full Sample`$data.poly |> 
+        tibble() |> 
+        mutate(group = c)
+    )
+  
+  # Coefficients ----
+  edu_country <- 
+    feols(
+      ed_pct ~ mothers_ed_pct | sex + age,
+      foo1,
+      cluster = ~ cluster_id
+    )
+  
+  mean_edu <- mean(fixef(edu_country)$sex, na.rm = T)
+  
+  edu_cluster <- 
+    feols(
+      ed_pct ~ mothers_ed_pct | cluster_id^colori^sexi + sex + age,
+      foo1
+    )
+  
+  mean_edu_cluster <- mean(fixef(edu_cluster)$`cluster_id^colori^sexi`, na.rm = T)
+  
+  # Join data for coefficients ----
+  data_coefs <- 
+    data_coefs |> 
+    bind_rows(
+      tibble(
+        group = c,
+        relative_country = edu_country$coefficients,
+        relative_country_se = edu_country$se,
+        absolute_country = mean_edu,
+        relative_cluster = edu_cluster$coefficients,
+        relative_cluster_se = edu_cluster$se,
+        absolute_cluster = mean_edu_cluster,
+        ed = mean(foo1$ed, na.rm = T),
+        ed_mothed = mean(foo1$mothers_ed_c, na.rm = T)
+      )
+    )
+  
+}
+
+data_points |> 
+  write_csv("~/Dropbox/Papers/UCR/UCR_09.23/Results/relative_mobility_data_points.csv")
+
+data_poly |> 
+  write_csv("~/Dropbox/Papers/UCR/UCR_09.23/Results/relative_mobility_data_poly.csv")
+
+data_coefs |> 
+  write_csv("~/Dropbox/Papers/UCR/UCR_09.23/Results/relative_mobility_data_coefs.csv")
+
+## Plot by country ----
+data_points <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_09.23/Results/relative_mobility_data_points.csv")
+
+data_poly <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_09.23/Results/relative_mobility_data_poly.csv")
+
+data_coefs <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_09.23/Results/relative_mobility_data_coefs.csv")
+
+
+ggplot() +
+  geom_point(
+    data = data_points,
+    aes(x, fit), color = "#2A788EFF",
+    size = 1
+  ) +
+  geom_line(
+    data = data_poly,
+    aes(x, fit), color = "#2A788EFF"
+  ) +
+  theme_clean +
+  labs(
+    x = "Mother's educational percentile rank",
+    y = "Individual's educational percentile rank",
+  ) +
+  coord_cartesian(
+    ylim = c(0,100)
+  ) +
+  geom_text(
+    data = data_coefs,
+    aes(
+      x = 15, y = 95,
+      label = str_c(
+        "Slope: ",
+        round(relative_country, 3),
+        " (", round(relative_country_se, 3), ")"
+      )
+    ),
+    size = 1, color = "#2A788EFF"
+  ) +
+  geom_text(
+    data = data_coefs,
+    aes(
+      x = 15, y = 80,
+      label = str_c(
+        "Slope within country:\n",
+        round(relative_cluster, 3),
+        " (", round(relative_cluster_se, 3), ")"
+      )
+    ),
+    size = 1, color = "#2A788EFF"
+  ) +
+  facet_wrap(~group)
+
+
+
+## Comparison to GDIM ----
+data_coefs <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_09.23/Results/relative_mobility_data_coefs.csv")
+
+
+gdim <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_09.23/Data/GDIM/gdim.csv") |> 
+  filter(code %in% data_coefs$group) |> 
+  filter(cohort >= 1960)
+
+gdim_grouped <- 
+  gdim |> 
+  group_by(code) |> 
+  summarise(
+    edp = weighted.mean(MEANp, obs),
+    edc = weighted.mean(MEANc, obs),
+    beta = weighted.mean(BETA, obs),
+  ) |> 
+  ungroup() |> 
+  rename(group = code)
+
+foo <- 
+  data_coefs |> 
+  left_join(
+    gdim_grouped 
+  )
+
+
+# Child years of schooling ----
+foo |> 
+  ggplot(aes(ed, edc)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_smooth(
+    method = "lm",
+    se = F, color = "#2A788EFF"
+  ) +
+  geom_point() +
+  ggrepel::geom_label_repel(
+    aes(label = group),
+    size = 2
+  ) +
+  labs(
+    y = "GDIM (van der Weide et al. 2023)",
+    x = "LAPOP"
+  ) +
+  coord_cartesian(
+    xlim = c(5, 12),
+    ylim = c(5, 12)
+  )
+
+# Parental years of schooling ----
+foo |> 
+  ggplot(aes(ed_mothed, edp)) +
+  geom_smooth(
+    method = "lm",
+    se = F, color = "#2A788EFF"
+  ) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_point() +
+  ggrepel::geom_label_repel(
+    aes(label = group),
+    size = 2
+  ) +
+  labs(
+    y = "GDIM (van der Weide et al. 2023)",
+    x = "LAPOP"
+  ) +
+  coord_cartesian(
+    xlim = c(2, 8.5),
+    ylim = c(2, 8.5)
+  )
+
+
+
+# Relative mobility without controls ----
+foo |> 
+  ggplot(aes(relative_country, beta)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_smooth(
+    method = "lm",
+    se = F, color = "#2A788EFF"
+  ) +
+  geom_point() +
+  ggrepel::geom_label_repel(
+    aes(label = group),
+    size = 2
+  ) +
+  labs(
+    y = "GDIM (van der Weide et al., 2023)",
+    x = "LAPOP"
+  ) +
+  coord_cartesian(
+    xlim = c(.35, .65),
+    ylim = c(.35, .65)
+  )
+
+# Relative mobility with controls ----
+foo |> 
+  ggplot(aes(relative_cluster, beta)) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  geom_smooth(
+    method = "lm",
+    se = F, color = "#2A788EFF"
+  ) +
+  geom_point() +
+  ggrepel::geom_label_repel(
+    aes(label = group),
+    size = 2
+  ) +
+  labs(
+    y = "GDIM (van der Weide et al., 2023)",
+    x = "LAPOP"
+  ) +
+  coord_cartesian(
+    xlim = c(.25, .625),
+    ylim = c(.25, .625)
+  )
+
+
+## Bootstrap by skin tone: Differences in different percentiles ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  ) 
+
+nboots <- 1000
+# Generating a n1 by n_data matrix where each row is an n_data dimensional
+# Dirichlet draw.
+set.seed(123)
+weights <- matrix( rexp(nrow(foo) * nboots, 1) , ncol = nrow(foo), byrow = TRUE)
+weights <- weights / rowSums(weights)
+
+slopes_boot <- tibble()
+gaps_boot <- tibble()
+
+for (i in 1:nboots) {
+  
+  print(i)
+  
+  tryCatch({
+    
+    # Run rank-to-rank regression
+    soc_mob_ed <- 
+      feols(
+        ed_pct ~ 
+          (mothers_ed_pct) * (
+            colorr_2 + colorr_3 + colorr_4 + colorr_5 + colorr_6 +
+              colorr_7 + colorr_8 + colorr_9
+          )  +
+          (sex) + (age)
+        | cluster_id^colori^sexi,
+        weights = foo$weight1500b*weights[i,],
+        foo, cluster = ~  cluster_id^colori^sexi)
+    
+    # Constants
+    constant_1 <- mean(fixef(soc_mob_ed)$`cluster_id^colori^sexi`, na.rm = T)
+    
+    constants <- 
+      broom::tidy(soc_mob_ed) |> 
+      select(term, estimate) |> 
+      filter(str_detect(term, "colorr")) |> 
+      filter(!(str_detect(term, "mothers_ed_pct")))
+    
+    # Slopes
+    slopes <- 
+      broom::tidy(soc_mob_ed) |> 
+      select(term, estimate) |> 
+      filter((str_detect(term, "mothers_ed_pct")))
+    
+    slopes <- 
+      slopes |> 
+      mutate(
+        colorr = seq(1,9),
+        slope = ifelse(estimate != slopes$estimate[1], estimate + slopes$estimate[1], estimate)
+      ) |> 
+      select(colorr, slope)
+    
+    # Expected gaps at different percentiles
+    expected_gaps <- 
+      tibble(
+        colorr = 1,
+        epct05 = constant_1 + (slopes$slope[1])*5,
+        epct25 = constant_1 + (slopes$slope[1])*25,
+        epct50 = constant_1 + (slopes$slope[1])*50,
+        epct75 = constant_1 + (slopes$slope[1])*75,
+        epct95 = constant_1 + (slopes$slope[1])*95,
+      )
+    
+    for (c in c(2:9)) {
+      
+      expected_gaps <- 
+        expected_gaps |>
+        bind_rows(
+          tibble(
+            colorr = c,
+            epct05 = constant_1 + constants$estimate[c-1] + (slopes$slope[c])*5,
+            epct25 = constant_1 + constants$estimate[c-1] + (slopes$slope[c])*25,
+            epct50 = constant_1 + constants$estimate[c-1] + (slopes$slope[c])*50,
+            epct75 = constant_1 + constants$estimate[c-1] + (slopes$slope[c])*75,
+            epct95 = constant_1 + constants$estimate[c-1] + (slopes$slope[c])*95,
+          )
+        )
+      
+    }
+    
+    slopes_boot <- 
+      slopes_boot |> 
+      bind_rows(
+        slopes |> 
+          mutate(boot = i)
+      )
+    
+    gaps_boot <- 
+      gaps_boot |> 
+      bind_rows(
+        expected_gaps |> 
+          mutate(boot = i)
+      )
+    
+    
+  }, error=function(e){})
+  
+}
+
+slopes_boot |> 
+  write_csv("Results/bootstraped_educ_mobility_slopes.csv")
+
+gaps_boot |> 
+  write_csv("Results/bootstraped_educ_mobility_gaps.csv")
+
+df <- fixest::degrees_freedom(soc_mob_ed, "resid")
+df <- 69494
+range <- 8
+
+# Differences at pct 5 ----
+gaps_pct05 <- 
+  gaps_boot |> 
+  group_by(colorr) |> 
+  summarise(
+    mean = mean(epct05),
+    sd = sd(epct05)
+  ) |> 
+  ungroup() 
+
+gaps_pct05 <- 
+  gaps_pct05 |> 
+  mutate(
+    mean = mean - gaps_pct05$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+gaps_pct05 <- 
+  gaps_pct05 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct05)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(gaps_pct05$diff[2:(range + 1)], 3)
+pvals <- gaps_pct05$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+gaps_pct05 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-20, 0, by = 2),
+    limits = c(-17, 2)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 1, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 2,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Differences at pct 25 ----
+gaps_pct25 <- 
+  gaps_boot |> 
+  group_by(colorr) |> 
+  summarise(
+    mean = mean(epct25),
+    sd = sd(epct25)
+  ) |> 
+  ungroup() 
+
+gaps_pct25 <- 
+  gaps_pct25 |> 
+  mutate(
+    mean = mean - gaps_pct25$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+gaps_pct25 <- 
+  gaps_pct25 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct25)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(gaps_pct25$diff[2:(range + 1)], 3)
+pvals <- gaps_pct25$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+gaps_pct25 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-20, 0, by = 2),
+    limits = c(-17, 2)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 1, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 2,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Differences at median ----
+gaps_pct50 <- 
+  gaps_boot |> 
+  group_by(colorr) |> 
+  summarise(
+    mean = mean(epct50),
+    sd = sd(epct50)
+  ) |> 
+  ungroup() 
+
+gaps_pct50 <- 
+  gaps_pct50 |> 
+  mutate(
+    mean = mean - gaps_pct50$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+gaps_pct50 <- 
+  gaps_pct50 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct50)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(gaps_pct50$diff[2:(range + 1)], 3)
+pvals <- gaps_pct50$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+gaps_pct50 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-20, 0, by = 2),
+    limits = c(-17, 2)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 1, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 2,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Differences at pct 75 ----
+gaps_pct75 <- 
+  gaps_boot |> 
+  group_by(colorr) |> 
+  summarise(
+    mean = mean(epct75),
+    sd = sd(epct75)
+  ) |> 
+  ungroup() 
+
+gaps_pct75 <- 
+  gaps_pct75 |> 
+  mutate(
+    mean = mean - gaps_pct75$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+gaps_pct75 <- 
+  gaps_pct75 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct75)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(gaps_pct75$diff[2:(range + 1)], 3)
+pvals <- gaps_pct75$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+gaps_pct75 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-20, 0, by = 2),
+    limits = c(-17, 2)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 1, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 2,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Differences at pct 95 ----
+gaps_pct95 <- 
+  gaps_boot |> 
+  group_by(colorr) |> 
+  summarise(
+    mean = mean(epct95),
+    sd = sd(epct95)
+  ) |> 
+  ungroup() 
+
+gaps_pct95 <- 
+  gaps_pct95 |> 
+  mutate(
+    mean = mean - gaps_pct95$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+gaps_pct95 <- 
+  gaps_pct95 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct95)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(gaps_pct95$diff[2:(range + 1)], 3)
+pvals <- gaps_pct95$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+gaps_pct95 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-20, 0, by = 2),
+    limits = c(-17, 2)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 1, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 2,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Differences in slope ----
+slopes <- 
+  slopes_boot |>
+  group_by(colorr) |> 
+  summarise(
+    mean = mean(slope),
+    sd = sd(slope)
+  ) |> 
+  ungroup()
+
+slopes <- 
+  slopes |> 
+  mutate(
+    mean = mean - slopes$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+slopes <- 
+  slopes |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(slopes)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(slopes$diff[2:(range + 1)], 3)
+pvals <- slopes$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+slopes |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-0.1, .1, by = .025),
+    limits = c(-0.08, .13)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = .115, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = .13,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Educational intergenerational mobility by skin tone (rank-to-rank) ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+p1 <- 
+  binsreg(
+    y = foo$ed_pct, x = foo$mothers_ed_pct, 
+    w = ~ factor(countrycode) + factor(year) + factor(sex) + age, data=foo,
+    by = foo$colorr,
+    polyreg = 1, binsmethod="rot", nbinsrot = 10
+  )
+
+
+data_dots <- 
+  bind_rows(
+    p1$data.plot$`Group 1`$data.dots |> tibble(),
+    p1$data.plot$`Group 2`$data.dots |> tibble(),
+    p1$data.plot$`Group 3`$data.dots |> tibble(),
+    p1$data.plot$`Group 4`$data.dots |> tibble(),
+    p1$data.plot$`Group 5`$data.dots |> tibble(),
+    p1$data.plot$`Group 6`$data.dots |> tibble(),
+    p1$data.plot$`Group 7`$data.dots |> tibble(),
+    p1$data.plot$`Group 8`$data.dots |> tibble(),
+    p1$data.plot$`Group 9`$data.dots |> tibble(),
+  ) |> 
+  mutate(
+    group = as.numeric(group)
+  )
+
+
+data_poly <- 
+  bind_rows(
+    p1$data.plot$`Group 1`$data.poly |> tibble(),
+    p1$data.plot$`Group 2`$data.poly |> tibble(),
+    p1$data.plot$`Group 3`$data.poly |> tibble(),
+    p1$data.plot$`Group 4`$data.poly |> tibble(),
+    p1$data.plot$`Group 5`$data.poly |> tibble(),
+    p1$data.plot$`Group 6`$data.poly |> tibble(),
+    p1$data.plot$`Group 7`$data.poly |> tibble(),
+    p1$data.plot$`Group 8`$data.poly |> tibble(),
+    p1$data.plot$`Group 9`$data.poly |> tibble(),
+  )|> 
+  mutate(
+    group = as.numeric(group)
+  )
+
+p1 <- 
+  ggplot() +
+  geom_point(
+    data = data_dots,
+    aes(x, fit, color = factor(group)),
+    size = 2
+  ) +
+  geom_line(
+    data = data_poly,
+    aes(x, fit, color = factor(group))
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  labs(
+    x = "Mother's educational percentile rank",
+    y = "Individual's educational percentile rank",
+  ) +
+  coord_cartesian(
+    ylim = c(0,100)
+  ) +
+  guides(color = F)
+
+
+slopes_boot <-  
+  read_csv("~/Dropbox/Papers/UCR/UCR_09.23/Results/bootstraped_educ_mobility_slopes.csv") |>
+  group_by(colorr) |> 
+  summarise(
+    mean = mean(slope),
+    sd = sd(slope)
+  ) |> 
+  ungroup() |> 
+  mutate(
+    mean = formatC(mean, format="f", digits=3),
+    sd = formatC(sd, format="f", digits=3),
+    x = if_else(colorr <= 4, 15, 90),
+    y = if_else(colorr <= 4, 95 - colorr*7.5, 75 - colorr*7.5)
+  )
+
+p1 +
+  geom_label(
+    data = slopes_boot,
+    aes(
+      x = x, y = y, fill = factor(colorr),
+      label = str_c(
+        "Slope: ", mean,
+        " (", sd, ")"
+      )
+    ),
+    size = 2, alpha = .75
+  ) +
+  scale_fill_manual(values = perla_palette(11)) +
+  guides(fill = F)
+
+
+
+## Bootstrap by skin tone: Differences in different levels ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  ) 
+
+
+gaps_boot <- tibble()
+
+for (e in levels(factor(foo$mothers_ed_isced))) {
+  
+  print(e)
+  
+  foo1 <- 
+    foo |> 
+    filter(mothers_ed_isced == e)
+  
+  nboots <- 1000
+  # Generating a n1 by n_data matrix where each row is an n_data dimensional
+  # Dirichlet draw.
+  set.seed(123)
+  weights <- matrix( rexp(nrow(foo1) * nboots, 1) , ncol = nrow(foo1), byrow = TRUE)
+  weights <- weights / rowSums(weights)
+  
+  
+  for (i in 1:nboots) {
+    
+    print(i)
+    
+    tryCatch({
+      
+      # Run rank-to-level regression
+      soc_mob_ed <- 
+        feols(
+          ed_pct ~ 
+            (
+              colorr_2 + colorr_3 + colorr_4 + colorr_5 + colorr_6 +
+                colorr_7 + colorr_8 + colorr_9
+            )  +
+            (sex) + (age)
+          | cluster_id^colori^sexi,
+          weights = foo1$weight1500b*weights[i,],
+          foo1, cluster = ~  cluster_id^colori^sexi)
+      
+      # Mean rank
+      mean_rank <- mean(fixef(soc_mob_ed)$`cluster_id^colori^sexi`, na.rm = T)
+      
+      # Gaps 
+      gaps <- 
+        broom::tidy(soc_mob_ed) |> 
+        select(term, estimate) |> 
+        filter(str_detect(term, "colorr")) 
+      
+      gaps <- 
+        gaps |> 
+        mutate(
+          estimate = estimate + mean_rank
+        ) |> 
+        bind_rows(
+          tibble(
+            term = "colorr_1",
+            estimate = mean_rank
+          )
+        ) |> 
+        mutate(
+          mothers_ed_isced = e,
+          df = fixest::degrees_freedom(soc_mob_ed, "resid")
+        )
+      
+      gaps_boot <- 
+        gaps_boot |> 
+        bind_rows(
+          gaps
+        )
+      
+      
+    }, error=function(e){})
+    
+  }
+  
+}
+
+gaps_boot |> 
+  write_csv("Results/bootstraped_educ_mobility_gaps_levels.csv")
+
+
+foo <- 
+  gaps_boot |> 
+  mutate(
+    colorr = as.numeric(str_remove_all(term, "colorr_"))
+  ) |> 
+  select(colorr, everything()) |> 
+  select(-term) |> 
+  group_by(colorr, mothers_ed_isced) |> 
+  summarise(
+    mean = mean(estimate, na.rm = T),
+    sd = sd(estimate, na.rm = T),
+    df = mean(df)
+  ) |> 
+  ungroup()
+
+# Less than primary ----
+foo1 <- 
+  foo |> 
+  filter(mothers_ed_isced == "Less than primary")
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    mean = mean - foo1$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct05)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(foo1$diff[2:(range + 1)], 3)
+pvals <- foo1$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+foo1 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-27.5, 5, by = 2.5),
+    limits = c(-27.5, 7.5)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 5, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 7,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Primary ----
+foo1 <- 
+  foo |> 
+  filter(mothers_ed_isced == "Primary")
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    mean = mean - foo1$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct05)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(foo1$diff[2:(range + 1)], 3)
+pvals <- foo1$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+foo1 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-27.5, 5, by = 2.5),
+    limits = c(-27.5, 7.5)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 5, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 7,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Lower secondary ----
+foo1 <- 
+  foo |> 
+  filter(mothers_ed_isced == "Lower secondary")
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    mean = mean - foo1$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct05)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(foo1$diff[2:(range + 1)], 3)
+pvals <- foo1$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+foo1 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-27.5, 5, by = 2.5),
+    limits = c(-27.5, 7.5)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 5, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 7,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Upper secondary ----
+foo1 <- 
+  foo |> 
+  filter(mothers_ed_isced == "Lower secondary")
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    mean = mean - foo1$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct05)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(foo1$diff[2:(range + 1)], 3)
+pvals <- foo1$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+foo1 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-27.5, 5, by = 2.5),
+    limits = c(-27.5, 7.5)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 5, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 7,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+# Tertiary ----
+foo1 <- 
+  foo |> 
+  filter(mothers_ed_isced == "Tertiary")
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    mean = mean - foo1$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE)
+  ) 
+
+foo1 <- 
+  foo1 |> 
+  mutate(
+    pvalue_corr =  p.adjust(pvalue, method = "BH", n = nrow(gaps_pct05)),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(foo1$diff[2:(range + 1)], 3)
+pvals <- foo1$pvalue_corr[2:(range + 1)]
+pvals <- str_c("(", pvals, ")")
+
+foo1 |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-27.5, 5, by = 2.5),
+    limits = c(-27.5, 7.5)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = 5, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = 7,
+      label = round(diff, 3)
+    ),
+    size = 2.5
+  )
+
+### Heterogeneity ----
+## Ethnicity ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  filter(gdim_sample == 1) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  ) |> 
+  fastDummies::dummy_cols(
+    select_columns = "colorr",
+    remove_first_dummy = T
+  )
+
+table(foo$etnia2)/nrow(foo)
+
+setFixest_notes(F)
+
+slopes_boot <- tibble()
+gaps_boot <- tibble()
+
+for (e in levels(factor(foo$etnia2))){
+  
+  print(e)
+  
+  foo1 <- 
+    foo |> 
+    mutate(
+      etnia2 = as.character(etnia2)
+    ) |> 
+    filter(etnia2 == e)
+  
+  nboots <- 1000
+  # Generating a n1 by n_data matrix where each row is an n_data dimensional
+  # Dirichlet draw.
+  set.seed(123)
+  weights <- matrix( rexp(nrow(foo1) * nboots, 1) , ncol = nrow(foo1), byrow = TRUE)
+  weights <- weights / rowSums(weights)
+  
+  pb <- progress_bar$new(total = length(1:nboots))
+  pb$tick(0)
+  Sys.sleep(3)
+  
+  for (i in 1:nboots) {
+    
+    pb$tick()
+    
+    tryCatch({
+      
+      # Run rank-to-rank regression
+      soc_mob_ed <- 
+        feols(
+          ed_pct ~ 
+            (mothers_ed_pct) * (
+              colorr_2 + colorr_3 + colorr_4 + colorr_5 + colorr_6 +
+                colorr_7 + colorr_8 + colorr_9
+            )  +
+            (sex) + (age)
+          | cluster_id^colori^sexi,
+          weights = foo1$weight1500b*weights[i,],
+          foo1, cluster = ~  cluster_id^colori^sexi)
+      
+      # Constants
+      constant_1 <- mean(fixef(soc_mob_ed)$`cluster_id^colori^sexi`, na.rm = T)
+      
+      constants <- 
+        broom::tidy(soc_mob_ed) |> 
+        select(term, estimate) |> 
+        filter(str_detect(term, "colorr")) |> 
+        filter(!(str_detect(term, "mothers_ed_pct")))
+      
+      # Slopes
+      slopes <- 
+        broom::tidy(soc_mob_ed) |> 
+        select(term, estimate) |> 
+        filter((str_detect(term, "mothers_ed_pct")))
+      
+      slopes <- 
+        slopes |> 
+        mutate(
+          etnia = e,
+          colorr = seq(1,9),
+          slope = ifelse(estimate != slopes$estimate[1], estimate + slopes$estimate[1], estimate)
+        ) |> 
+        select(etnia, colorr, slope)
+      
+      # Expected gaps at different percentiles
+      expected_gaps <- 
+        tibble(
+          etnia = e,
+          constant_etnia = constant_1,
+          colorr = 1,
+          epct05 = constant_etnia + (slopes$slope[1])*5,
+          epct25 = constant_etnia + (slopes$slope[1])*25,
+          epct50 = constant_etnia + (slopes$slope[1])*50,
+          epct75 = constant_etnia + (slopes$slope[1])*75,
+          epct95 = constant_etnia + (slopes$slope[1])*95,
+        )
+      
+      for (c in c(2:9)) {
+        
+        expected_gaps <- 
+          expected_gaps |>
+          bind_rows(
+            tibble(
+              etnia = e,
+              constant_etnia = constant_1,
+              colorr = c,
+              epct05 = constant_etnia + constants$estimate[c-1] + (slopes$slope[c])*5,
+              epct25 = constant_etnia + constants$estimate[c-1] + (slopes$slope[c])*25,
+              epct50 = constant_etnia + constants$estimate[c-1] + (slopes$slope[c])*50,
+              epct75 = constant_etnia + constants$estimate[c-1] + (slopes$slope[c])*75,
+              epct95 = constant_etnia + constants$estimate[c-1] + (slopes$slope[c])*95,
+            )
+          )
+        
+      }
+      
+      slopes_boot <- 
+        slopes_boot |> 
+        bind_rows(
+          slopes |> 
+            mutate(boot = i)
+        )
+      
+      gaps_boot <- 
+        gaps_boot |> 
+        bind_rows(
+          expected_gaps |> 
+            mutate(
+              boot = i,
+              df = fixest::degrees_freedom(soc_mob_ed, "resid")
+            )
+        )
+      
+      
+    }, error=function(e){})
+    
+    Sys.sleep(1 / length(1:nboots))
+    
+  }
+  
+  
+}
+### Direct and indirect effects -----
+# Non-saturated model: Tables ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+
+
+# Income: Poisson ----
+pois = list() 
+
+pois[[1]] = 
+  fepois(
+    incomepppd ~ colorr + colorr^2
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+pois[[2]] = 
+  fepois(
+    incomepppd ~ colorr + colorr^2 | countrycode^year
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+pois[[3]] = 
+  fepois(
+    incomepppd ~ colorr + colorr^2 | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+pois[[4]] = 
+  fepois(
+    incomepppd ~ colorr + colorr^2 + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+# pois[[5]] = 
+#   fepois(
+#     incomepppd ~ colorr + colorr^2 + etnia2 + ..covs | ..fe
+#     , weights = ~ weight1500b,
+#     foo, cluster = ~ cluster_id^colori^sexi
+#   )
+
+pois[[5]] = 
+  fepois(
+    incomepppd ~ colorr + colorr^2 + i(ed) + etnia2  + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+
+etable(
+  pois,
+  drop = "!Skin tone",
+  tex = T, tpt = T,
+  title = "Skin tone penalty",
+  digits = 3, digits.stats = 3
+)
+
+summary(foo$incomepppd)
+sd(foo$incomepppd)
+
+# Income: OLS ----
+ols = list() 
+
+ols[[1]] = 
+  feols(
+    incomepppd ~ colorr + colorr^2
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+ols[[2]] = 
+  feols(
+    incomepppd ~ colorr + colorr^2 | countrycode^year
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+ols[[3]] = 
+  feols(
+    incomepppd ~ colorr + colorr^2 | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+ols[[4]] = 
+  feols(
+    incomepppd ~ colorr + colorr^2 + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+# ols[[5]] = 
+#   feols(
+#     incomepppd ~ colorr + colorr^2 + etnia2 + ..covs | ..fe
+#     , weights = ~ weight1500b,
+#     foo, cluster = ~ cluster_id^colori^sexi
+#   )
+
+ols[[5]] = 
+  feols(
+    incomepppd ~ colorr + colorr^2 + i(ed) + etnia2  + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+etable(
+  ols,
+  drop = "!Skin tone",
+  tex = T, tpt = T,
+  title = "Skin tone penalty",
+  digits = 3, digits.stats = 3
+)
+
+summary(foo$incomepppd)
+sd(foo$incomepppd)
+
+# Years of schooling ----
+ed = list() 
+
+ed[[1]] = 
+  feols(
+    scale(ed) ~ colorr + colorr^2
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+ed[[2]] = 
+  feols(
+    scale(ed) ~ colorr + colorr^2 | countrycode^year
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+ed[[3]] = 
+  feols(
+    scale(ed) ~ colorr + colorr^2 | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+ed[[4]] = 
+  feols(
+    scale(ed) ~ colorr + colorr^2 + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori^sexi
+  )
+
+# ed[[5]] = 
+#   feols(
+#     scale(ed) ~ colorr + colorr^2 + etnia2 + ..covs | ..fe
+#     , weights = ~ weight1500b,
+#     foo, cluster = ~ cluster_id^colori^sexi
+#   )
+
+etable(
+  ed,
+  drop = "!Skin tone",
+  tex = T, tpt = T,
+  title = "Skin tone penalty",
+  digits = 3, digits.stats = 3
+)
+
+summary(foo$ed)
+sd(foo$ed, na.rm = T)
+
+
+#########################################################
+#########################################################

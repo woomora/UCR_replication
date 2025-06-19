@@ -1,0 +1,439 @@
+# ---- Appendix C. Skin Tone and Intergenerational Disparities ------------------
+# -- Table C1: Absolute Educational mobility ----
+specifications <- list(
+  # Model 1: Base model with colorr
+  abs_ed_im ~ colorr,
+  
+  # Model 2: Country times year fixed effects
+  abs_ed_im ~ colorr | countrycode_year,
+  
+  # Model 3: Municipality times year fixed effects
+  abs_ed_im ~ colorr | country_mun^year,
+  
+  # Model 4: Cluster fixed effects
+  abs_ed_im ~ colorr | cluster_id,
+  
+  # Model 5: Cluster + Enumerator FE
+  abs_ed_im ~ colorr | cluster_enumerator_id,
+  
+  # Model 6: Cluster + Enumerator FE + HH size FE + Age + Sex
+  abs_ed_im ~ colorr + age + age^2 + i(sex) | cluster_enumerator_id,
+  
+  # Model 7: Cluster + Enumerator FE + HH size FE + Age + Sex + Mothers Ed
+  abs_ed_im ~ colorr + age + age^2  + i(sex) + i(mothers_ed_isced) | cluster_enumerator_id,
+  
+  # Model 8: Cluster + Enumerator FE + HH size FE + Age + Sex + Mothers Ed + Quadratic term
+  abs_ed_im ~ colorr + colorr^2 + age + age^2  + i(sex) + i(mothers_ed_isced) | cluster_enumerator_id,
+  
+  # Model 9: Cluster + Enumerator FE + HH size + Age + Sex + Mothers Ed + Income
+  abs_ed_im ~ colorr + age + age^2 + i(sex) + i(mothers_ed_isced) + hhincomepc_mx0 | cluster_enumerator_id,
+  
+  # Model 10: Cluster + Enumerator FE + Age + Sex + Mothers Ed + Income + Bad controls
+  abs_ed_im ~ colorr + age + age^2  + i(sex) + i(mothers_ed_isced) + hhincomepc_mx0 +
+    i(etnia) + i(occupa_status) + i(salary_status) + i(marital_status) + i(religion) | cluster_enumerator_id
+)
+
+abs_ed_im_table <- lapply(specifications, function(fml) {
+  feols(fml, weights = ~ weight1500, data = lapop_analysis, cluster = ~ cluster_enumerator_id)
+})
+
+# Generate etable with custom fit statistics
+etable_output <- etable(
+  abs_ed_im_table,
+  drop = c("Constant", "Employment status", "Religion", "Marital status", "Salary status"),
+  tex = TRUE, tpt = TRUE,
+  title = "Skin tone gaps: Absolute educational mobility (z-score)",
+  digits = "r3", digits.stats = 3,
+  fitstat = ~ my + n + r2 + ar2 + partial_r2_ty + rv_q + rv_qa,
+  signif.code = NA,
+  notes = 
+    "
+    \\footnotesize
+    \\textit{Notes:}
+    Estimates using specification \\ref{eq:baseline-specification}.
+    Dependent variable is absolute educational mobility (indicator variable equal to one if respondents' have strictly higher educational category than mothers if mothers do not have tertiary, or with tertiary education if the mother has tertiary).
+    Mean dependent variable is 0.691 with a standard deviation of 0.462.
+    Skin tone stands for the PERLA color palette including scales from 1 to 9, top coding skin tones above 9 given their small share.
+    Clustered Within-municipality $\\times$ Year $\\times$ Enumerator standard errors in parentheses.
+    The omitted category in Gender is Female.
+    The omitted category in Mother's education is No education.
+    The omitted category in Ethnoracial identity is White.
+    Bad or unclean controls include: occupational status (i.e. working, unemployed), salary status (i.e. self-employed, owner, worker in private sector, etc.), marital status (i.e. married, single, divorced, etc.), and religion.
+    Sensitivity statistics following \\citet{Cinelli2020}. 
+    $RV_{q=1}$ represents the share of residual variance in treatment and outcome that unobserved confounders must explain to nullify the observed effect. $RV_{q=1, \\alpha=0.05}$ indicates the percentage needed to bring the lower bound of the confidence interval to zero at a 5\\% significance level. The partial $R^2$ of the treatment with the outcome sets a lower bound on the treatment variance unobserved confounders must explain if they fully account for the effect.
+    "
+)
+
+etable_output
+
+sd(lapop_analysis$abs_ed_im, na.rm = T)
+
+#
+
+# -- Figure C1: Relative intergenerational mobility by country ----
+# Note: Make sure to run Appendix_A to have the relative mobility estimates ready 
+# to plot by country
+
+data_points <- 
+  read_csv("results/relative_mobility_data_points.csv") |> 
+  group_by(group, bin) |> 
+  summarise(
+    fit = mean(fit, na.rm = T)
+  ) |> 
+  ungroup()
+
+data_poly <- 
+  read_csv("results/relative_mobility_data_poly.csv") |> 
+  group_by(group, bin) |> 
+  summarise(
+    fit = mean(fit, na.rm = T)
+  ) |> 
+  ungroup()
+
+
+data_coefs <- 
+  read_csv("results/relative_mobility_data_coefs.csv") |> 
+  group_by(group) |> 
+  summarise(
+    relative_country = weighted.mean(relative_rank, cohort_size, na.rm = T),
+    relative_country_se = weighted.mean(relative_rank_se, cohort_size, na.rm = T)
+  ) |> 
+  ungroup()
+
+
+
+ggplot() +
+  geom_point(
+    data = data_points,
+    aes(10*bin, fit), color = "#2A788EFF",
+    size = 1.5
+  ) +
+  geom_line(
+    data = data_poly,
+    aes(10*bin, fit), color = "#2A788EFF"
+  ) +
+  theme_clean +
+  labs(
+    x = "Mother's educational percentile rank",
+    y = "Individual's educational percentile rank",
+  ) +
+  coord_cartesian(
+    ylim = c(0,100)
+  ) +
+  geom_text(
+    data = data_coefs,
+    aes(
+      x = -Inf, y = Inf,
+      hjust = -.2, vjust = 1,
+      label = str_c(
+        "Slope: ",
+        round(relative_country, 3),
+        " (", round(relative_country_se, 3), ")"
+      )
+    ),
+    size = 2, color = "#2A788EFF"
+  ) +
+  facet_wrap(~group)
+
+
+ggsave(
+  filename = "plots/FigC1.pdf",
+  dpi = 300,
+  width = 12, 
+  height = 9,
+)
+
+#
+# -- Figure C2: Absolute educational IM skin tone gaps at different percentiles ----
+# --- Figure C2, Panel a): Differences at pct 25 ----
+gaps_boot <- read_csv("Results/bootstraped_educ_mobility_gaps.csv")
+
+gaps_pct25 <- 
+  gaps_boot |> 
+  group_by(boot) |> 
+  mutate(
+    diff = epct25 - epct25[1],
+    diff_adj = epct25 - dplyr::lag(epct25)
+  ) |> 
+  ungroup() |> 
+  group_by(colorr) |> 
+  summarise(
+    diff_mean = mean(diff, na.rm = T),
+    diff_se = sd(diff, na.rm = T),
+    diff_adj_mean = mean(diff_adj, na.rm = T),
+    diff_adj_se = sd(diff_adj, na.rm = T),
+  ) |> 
+  ungroup()
+
+gaps_pct25 <- 
+  gaps_pct25 |> 
+  mutate(
+    colorr_num = seq(1,9),
+    uci95 = if_else(colorr != 1, diff_mean + 1.96*diff_se, 0),
+    lci95 = if_else(colorr != 1, diff_mean - 1.96*diff_se, 0),
+    uci90 = if_else(colorr != 1, diff_mean + 1.64*diff_se, 0),
+    lci90 = if_else(colorr != 1, diff_mean - 1.64*diff_se, 0),
+    diff_adj_pvalue = 2*pt(q=abs(diff_adj_mean/diff_adj_se), df=df, lower.tail=FALSE)
+  ) |> 
+  select(colorr, colorr_num, everything()) |> 
+  mutate(
+    diff_adj_qvalue = c(NA_real_, q_val(diff_adj_pvalue[-1])),
+    diff_adj_qvalue = formatC(diff_adj_qvalue, format="f", digits=3),
+  ) |> 
+  mutate_at(
+    vars(diff_mean, diff_se),
+    ~ if_else(colorr_num == 1, 0, .)
+  ) 
+
+# Average marginal effect
+ame_weights <- 
+  lapop_analysis |> 
+  group_by(colorr) |> 
+  count() |> 
+  ungroup() |> 
+  mutate(
+    n = n/sum(n)
+  ) |> 
+  filter(colorr > 1) |> 
+  select(n)
+
+ame_weights <- c(0, ame_weights$n)
+
+avg_meff <- 
+  gaps_pct25 |> 
+  select(diff_adj_mean) |> 
+  mutate(
+    ame_weights = ame_weights
+  ) |> 
+  summarise(
+    diff_adj_mean = weighted.mean(diff_adj_mean, ame_weights, na.rm = T)
+  )
+
+avg_meff <- avg_meff$diff_adj_mean
+
+# Difference between adjacent skin tones
+diffs <- round(gaps_pct25$diff_adj_mean[-1], 3)
+pvals <- gaps_pct25$diff_adj_qvalue[-1]
+pvals <- str_c("[", pvals, "]")
+adj_diff_labs <- str_c(diffs, "\n", pvals)
+
+gaps_pct25 |> 
+  ggplot(aes(x = colorr_num, y = diff_mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(size = 4, shape = 21, stroke = 0.75, color = "#7f7f7f", fill = NA) +
+  geom_point(size = 3.5) +
+  scale_color_manual(values = perla_palette(9)) +
+  scale_y_continuous(
+    breaks = seq(-20, 4, by = 2),
+  ) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(seq(1,8), "9 or more")
+  ) +
+  labs(x = "Skin tone (PERLA scale)", y = "Estimate (percentiles)", subtitle = "") +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 12)
+  ) +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = adj_diff_labs,
+    y_position = Inf, 
+    xmin = seq(1.05, 9 - 1 + .05, by = 1), xmax = seq(1.95, 9 - 1 + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 3, vjust = -0.15
+  ) +
+  coord_cartesian(clip = "off") + 
+  geom_label(
+    y = 0, x = 9 -.5, size = 2.75, hjust = .5, vjust = 2.5,
+    label = str_c(
+      "AME: ", formatC(avg_meff, format="f", digits=3)
+    )
+  )
+
+ggsave("plots/FigC2a.pdf", dpi = 300, width = 7.5, height = 5)
+
+# --- Figure C2, Panel b): Differences at pct 75 ----
+gaps_pct75 <- 
+  gaps_boot |> 
+  group_by(boot) |> 
+  mutate(
+    diff = epct75 - epct75[1],
+    diff_adj = epct75 - dplyr::lag(epct75)
+  ) |> 
+  ungroup() |> 
+  group_by(colorr) |> 
+  summarise(
+    diff_mean = mean(diff, na.rm = T),
+    diff_se = sd(diff, na.rm = T),
+    diff_adj_mean = mean(diff_adj, na.rm = T),
+    diff_adj_se = sd(diff_adj, na.rm = T),
+  ) |> 
+  ungroup()
+
+gaps_pct75 <- 
+  gaps_pct75 |> 
+  mutate(
+    colorr_num = seq(1,9),
+    uci95 = if_else(colorr != 1, diff_mean + 1.96*diff_se, 0),
+    lci95 = if_else(colorr != 1, diff_mean - 1.96*diff_se, 0),
+    uci90 = if_else(colorr != 1, diff_mean + 1.64*diff_se, 0),
+    lci90 = if_else(colorr != 1, diff_mean - 1.64*diff_se, 0),
+    diff_adj_pvalue = 2*pt(q=abs(diff_adj_mean/diff_adj_se), df=df, lower.tail=FALSE)
+  ) |> 
+  select(colorr, colorr_num, everything()) |> 
+  mutate(
+    diff_adj_qvalue = c(NA_real_, q_val(diff_adj_pvalue[-1])),
+    diff_adj_qvalue = formatC(diff_adj_qvalue, format="f", digits=3),
+  ) |> 
+  mutate_at(
+    vars(diff_mean, diff_se),
+    ~ if_else(colorr_num == 1, 0, .)
+  ) 
+
+# Average marginal effect
+ame_weights <- 
+  lapop_analysis |> 
+  group_by(colorr) |> 
+  count() |> 
+  ungroup() |> 
+  mutate(
+    n = n/sum(n)
+  ) |> 
+  filter(colorr > 1) |> 
+  select(n)
+
+ame_weights <- c(0, ame_weights$n)
+
+avg_meff <- 
+  gaps_pct75 |> 
+  select(diff_adj_mean) |> 
+  mutate(
+    ame_weights = ame_weights
+  ) |> 
+  summarise(
+    diff_adj_mean = weighted.mean(diff_adj_mean, ame_weights, na.rm = T)
+  )
+
+avg_meff <- avg_meff$diff_adj_mean
+
+# Difference between adjacent skin tones
+diffs <- round(gaps_pct75$diff_adj_mean[-1], 3)
+pvals <- gaps_pct75$diff_adj_qvalue[-1]
+pvals <- str_c("[", pvals, "]")
+adj_diff_labs <- str_c(diffs, "\n", pvals)
+
+gaps_pct75 |> 
+  ggplot(aes(x = colorr_num, y = diff_mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(size = 4, shape = 21, stroke = 0.75, color = "#7f7f7f", fill = NA) +
+  geom_point(size = 3.5) +
+  scale_color_manual(values = perla_palette(9)) +
+  scale_y_continuous(
+    breaks = seq(-20, 4, by = 2),
+  ) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(seq(1,8), "9 or more")
+  ) +
+  labs(x = "Skin tone (PERLA scale)", y = "Estimate (percentiles)", subtitle = "") +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 12)
+  ) +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = adj_diff_labs,
+    y_position = Inf, 
+    xmin = seq(1.05, 9 - 1 + .05, by = 1), xmax = seq(1.95, 9 - 1 + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 3, vjust = -0.15
+  ) +
+  coord_cartesian(clip = "off") + 
+  geom_label(
+    y = 0, x = 9 -.5, size = 2.75, hjust = .5, vjust = 2.5,
+    label = str_c(
+      "AME: ", formatC(avg_meff, format="f", digits=3)
+    )
+  )
+
+ggsave("plots/FigC2b.pdf", dpi = 300, width = 7.5, height = 5)
+
+#
+# -- Figure C3: Relative Educational IM by skin tone ----
+slopes_boot <-  
+  read_csv("results/bootstraped_educ_mobility_slopes.csv") |>
+  group_by(colorr) |> 
+  summarise(
+    mean = mean(slope),
+    sd = sd(slope)
+  ) |> 
+  ungroup()
+
+slopes_boot <- 
+  slopes_boot |> 
+  mutate(
+    mean = mean - slopes_boot$mean[1],
+    uci95 = if_else(colorr != 1, mean + 1.96*sd, 0),
+    lci95 = if_else(colorr != 1, mean - 1.96*sd, 0),
+    uci90 = if_else(colorr != 1, mean + 1.64*sd, 0),
+    lci90 = if_else(colorr != 1, mean - 1.64*sd, 0),
+    diff = mean - dplyr::lag(mean),
+    den = sqrt(sd^2 + dplyr::lag(sd)^2),
+    pvalue = 2*pt(q=abs(diff/den), df=df, lower.tail=FALSE),
+    pvalue = if_else(is.na(pvalue), 0, pvalue)
+  ) 
+
+slopes_boot <- 
+  slopes_boot |> 
+  mutate(
+    pvalue_corr = q_val(pvalue),
+    pvalue_corr = formatC(pvalue_corr, format="f", digits=3),
+  )
+
+diffs <- round(slopes_boot$diff[2:(9)], 3)
+pvals <- slopes_boot$pvalue_corr[2:(9)]
+pvals <- str_c("[", pvals, "]")
+
+slopes_boot |> 
+  ggplot(aes(x = colorr, y = mean, color = factor(colorr))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(size = 4, shape = 21, stroke = 0.75, color = "#7f7f7f", fill = NA) +
+  geom_point(size = 3.5) +
+  scale_color_manual(values = perla_palette(9)) +
+  scale_x_continuous(
+    breaks = seq(1,9),
+    labels = c(as.character(seq(1,8)), "9 or more")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-0.12, .125, by = .025),
+    # limits = c(-0.08, .13)
+  ) +
+  labs(x = "Skin tone (PERLA scale)", y = "Estimate (percentiles)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = .115, 
+    xmin = seq(1.05, 8 + .05, by = 1), xmax = seq(1.95, 8 + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025, textsize = 2.5
+  ) +
+  geom_text(
+    aes(
+      x = colorr - .5, y = .13,
+      label = round(diff, 3)
+    ),
+    size = 3
+  )
+
+
+ggsave("plots/FigC3.pdf", dpi = 300, width = 7.5, height = 5)
+
+#

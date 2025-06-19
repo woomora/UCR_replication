@@ -1,0 +1,164 @@
+# ------------------------------------------------------------------------------
+# MASTER REPLICATION SCRIPT
+# Paper: Unveiling the Cosmic Race: Skin Tone and Intergenerational Economic Disparities in Latin America and the Caribbean
+# Author: L. Guillermo Woo-Mora
+# This script reproduces all tables and figures in the paper.
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 1. SETUP WORKSPACE
+# ------------------------------------------------------------------------------
+# ---- Workspace ---------------------------------------------------------------
+rm(list = ls())
+
+library(pacman)
+pacman::p_load(
+  tidyverse, sf, haven, hutils,
+  ggridges, viridis, wesanderson,
+  ggExtra, ggrepel, kableExtra,
+  fixest, fastDummies,
+  cowplot, ggpubr,
+  broom,
+  WeightIt,
+  binsreg,
+  progress, qval, marginaleffects,
+  ggeffects, nnet
+)
+
+pacman::p_load_gh(
+  "chadhazlett/sensemakr"
+)
+
+# Set theme_clean as default
+theme_clean <- 
+  ggthemes::theme_clean() +
+  theme(
+    legend.position = "bottom",
+    plot.background=element_blank(),
+    legend.background = element_rect(color = NA),
+    plot.margin = unit(c(.5,0.25,0.25,0.25), "cm"),
+    axis.text = element_text(size = 13),
+    axis.title = element_text(size = 14)
+  )
+
+theme_set(theme_clean)
+
+select <- dplyr::select
+everything <- dplyr::everything
+
+# Set fixest notes
+setFixest_notes(T)
+
+# Set global option to avoid scientific notation
+options(scipen = 999)
+
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 2. LOAD FUNCTIONS
+# ------------------------------------------------------------------------------
+# -- Read special functions ----
+source("scripts/ucr_functions.R")
+
+#
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 3. DATA PREPARATION
+# ------------------------------------------------------------------------------
+# -- Read derived data ----
+
+# NOTE TO USERS:
+# This script assumes that the derived LAPOP dataset has already been constructed.
+# If you wish to replicate the full data processing pipeline (raw → harmonized),
+# including variable cleaning, harmonization, and regional standardization,
+# please run: "scripts/UCR_lapop_source_to_derived.R"
+
+# source("scripts/UCR_lapop_source_to_derived.R")
+
+# Load harmonized and derived dataset
+lapop <- read_rds("data/derived/lapop_merge_countries.rds")
+
+# Apply analysis-specific filters and transformations
+lapop_analysis <- lapop |> 
+  filter(
+    !is.na(colorr),        # Must have skin tone
+    !is.na(etnia),         # Must have ethnoracial identity
+    !is.na(mothers_ed),    # Must have mother's education
+    !is.na(hh_total),      # Must have household size
+    !is.na(cluster_id),    # Must have stratum
+    !is.na(colori),        # Must have enumerator's skin tone
+    !is.na(sexi),          # Must have enumerator's sex
+    gdim_sample == 1       # Must meet GDIM criteria
+  ) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),     # Top-code PERLA skin tone scale
+    colorr2 = colorr^2,                           # Quadratic term for skin tone
+    region = str_replace_all(region, "_", " "),   # Human-readable region names
+    countrycode_year = str_c(countrycode, "-", year),
+    country_mun_year = str_c(country_mun, "-", year),
+    cluster_enumerator_id = str_c(cluster_id, "-", sexi, "-", colori)
+  )
+
+# NOTE TO USERS:
+# To clean and process PRODER data,  please run: "scripts/UCR_proder.R"
+# source("scripts/UCR_proder.R")
+
+
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 4. FIGURES AND TABLES
+# ------------------------------------------------------------------------------
+# -- Figure 1: Ethnoracial category and skin tone ----
+# --- Figure 1, Panel (a): Ethnoracial categories ----
+source("scripts/exhibits/Fig1a.R")
+
+# --- Figure 1, Panel (b): Skin tone share by ethnoracial category ----
+source("scripts/exhibits/Fig1b.R")
+
+# -- Appendix A ----
+source("scripts/exhibits/Appendix_A.R")
+
+# ------------------------------------------------------------------------------
+# ---- Skin tone gaps in income and human capital ------------------------------
+# ------------------------------------------------------------------------------
+# -- Figure 2: Skin tone gaps ----
+# --- Figure 2, Panel (a): Household income per capita ----
+source("scripts/exhibits/Fig2a.R")
+
+# --- Figure 2, Panel (b): Years of schooling ----
+source("scripts/exhibits/Fig2b.R")
+
+# -- Figure 3: Explanatory power of ethnoracial categories vs. skin tone: Variance decomposition ----
+source("scripts/exhibits/Fig3.R")
+
+# -- Appendix B ----
+source("scripts/exhibits/Appendix_B.R")
+
+# ------------------------------------------------------------------------------
+# ---- Skin Tone and Intergenerational Disparities -----------------------------
+# ------------------------------------------------------------------------------
+# -- Figure 4: Skin tone and Intergenerational Disparities  ----
+# --- Figure 4, Panel (a): Absolute educational mobility ----
+source("scripts/exhibits/Fig4a.R")
+
+# --- Figure 4, Panel (b): Relative educational IM ----
+source("scripts/exhibits/Fig4b.R")
+
+# --- Figure 4, Panel (c): Relative educational IM by skin tone group ----
+source("scripts/exhibits/Fig4c.R")
+
+# -- Appendix C ----
+source("scripts/exhibits/Appendix_C.R")
+
+# ------------------------------------------------------------------------------
+# ---- Machine-rated Skin Tone Measures in Mexico ------------------------------
+# ------------------------------------------------------------------------------
+# -- Table 1: Comparing Estimates Across Datasets and Skin Tone Measures ----
+source("scripts/exhibits/Tab1.R")
+
+# -- Appendix D ----
+source("scripts/exhibits/Appendix_D.R")
+
+#
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# END OF MASTER SCRIPT
+# ------------------------------------------------------------------------------

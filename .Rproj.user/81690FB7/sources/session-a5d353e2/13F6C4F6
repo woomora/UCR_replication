@@ -1,0 +1,24 @@
+{
+    "id": "13F6C4F6",
+    "path": "~/Dropbox/Papers/published/UCR/previous versions/R/lapop macrodata 30.11.21.R",
+    "project_path": null,
+    "type": "r_source",
+    "hash": "3151124274",
+    "contents": "",
+    "dirty": false,
+    "created": 1750273454376.0,
+    "source_on_save": false,
+    "relative_order": 7,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source"
+    },
+    "folds": "25|45|96|0|\n115|20|163|0|\n164|21|228|0|\n229|44|268|0|\n269|20|318|0|\n319|21|377|0|\n378|44|412|0|\n413|21|445|0|\n446|13|457|0|\n458|6|486|0|\n487|41|496|0|\n497|12|503|0|\n",
+    "lastKnownWriteTime": 1638300575,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1750274045765,
+    "read_only": false,
+    "read_only_alternatives": []
+}

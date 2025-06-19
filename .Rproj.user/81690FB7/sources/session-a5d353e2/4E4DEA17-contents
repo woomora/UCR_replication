@@ -1,0 +1,2688 @@
+# Workplace ----
+rm(list = ls())
+library(tidyverse)
+library(readstata13)
+setwd("~/Dropbox/Datos/LAPOP/Merges by country")
+
+grDevices::X11(type = "cairo")
+theme_set(theme_classic())
+
+lapop <- tibble()
+# PPP rates ----
+ppp <- read_csv("~/Dropbox/Data/PPP World Bank/API_PA.NUS.PPP_DS2_en_csv_v2_1927762.csv")
+
+ppp <- 
+ppp %>% 
+  rename(pais = `Country Name`, countrycode = `Country Code`) %>% 
+  select(-`Indicator Code`, -`Indicator Name`, -countrycode) %>% 
+  pivot_longer(!pais, names_to = "year", values_to = "pppexrate") %>% 
+  mutate(year = as.numeric(year)) %>% 
+  left_join(
+    ppp %>% 
+      rename(pais = `Country Name`, countrycode = `Country Code`) %>%
+      group_by(pais, countrycode) %>% 
+      summarise() %>% 
+      ungroup()
+  ) %>% 
+  filter(year == 2012)
+
+## Merges by country ----
+# Mexico ----
+mex <- 
+  tibble(readstata13::read.dta13("Mexico LAPOP merge 2004-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(mex$q10)
+table(mex$q10new_12)
+table(mex$q10new_14)
+table(mex$q10new_16)
+table(mex$q10new_18)
+
+foo <- 
+  mex %>% 
+  mutate_at(vars(tidyselect::vars_select(names(mex), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(mex), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(mex), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+   mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+mex <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+mex <- 
+  mex %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Mexico"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+summary(mex$income, na.rm = TRUE)
+summary(mex$incomeppp, na.rm = TRUE)
+summary(mex$incomepcppp, na.rm = TRUE)
+
+plot(density(mex$incomeppp, na.rm = TRUE))
+plot(density(mex$incomepc, na.rm = TRUE))
+
+table(mex$etid)
+
+mex <- 
+mex %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, inteval
+         ) %>% 
+  mutate_if(is.factor, as.character)
+
+lapop <- 
+lapop %>%
+  bind_rows(mex)
+
+# Argentina ----
+arg <- 
+  tibble(readstata13::read.dta13("Argentina LAPOP merge 2008-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(arg$q10)
+table(arg$q10new_12)
+table(arg$q10new_14)
+table(arg$q10new_16)
+table(arg$q10new_18)
+
+foo <- 
+  arg %>% 
+  mutate_at(vars(tidyselect::vars_select(names(arg), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(arg), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(arg), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(arg), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(arg), starts_with('q10', ignore.case = TRUE))), str_replace, "\\–", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+arg <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+arg <- 
+  arg %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Argentina"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(arg$income))
+plot(density(arg$income, na.rm = TRUE))
+
+table(is.na(arg$incomepc))
+plot(density(arg$incomepc, na.rm = TRUE))
+
+arg <- 
+  arg %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate(prov = as.character(prov))
+
+glimpse(arg)
+
+lapop <- 
+  lapop %>%
+  bind_rows(arg)
+
+# Bolivia ----
+bol <- 
+  tibble(readstata13::read.dta13("Bolivia LAPOP merge 2004-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(bol$q10)
+table(bol$q10new_12)
+table(bol$q10new_14)
+table(bol$q10new_16)
+table(bol$q10new_18)
+
+foo <- 
+  bol %>% 
+  mutate_at(vars(tidyselect::vars_select(names(bol), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(bol), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(bol), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(bol), starts_with('q10', ignore.case = TRUE))), str_replace, "a", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(bol), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+bol <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+bol <- 
+  bol %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Bolivia"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(bol$income))
+plot(density(bol$income, na.rm = TRUE))
+
+table(is.na(bol$incomepc))
+plot(density(bol$incomepc, na.rm = TRUE))
+
+bol <- 
+  bol %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(r22:r23), as.character)
+
+lapop <- 
+  lapop %>%
+  bind_rows(bol)
+
+# Brazil ----
+bra <- 
+  tibble(readstata13::read.dta13("Brazil LAPOP merge 2007-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(bra$q10)
+table(bra$q10new_12)
+table(bra$q10new_14)
+table(bra$q10new_16)
+table(bra$q10new_18)
+
+bra <- 
+bra %>% 
+  mutate(q10 = case_when(q10 == "Sem Renda" ~ "Sem renda",
+                         q10 == "Até R$ 510,00" ~ "Até R$510",
+                         q10 == "De R$ 510,01 até R$ 1020,00" ~ "De R$ 510 até R$ 1020",
+                         q10 == "De R$ 1020,01 até R$ 1.530,00" ~ "De R$ 1020 até R$ 1.530",
+                         q10 == "De R$ 1.530,01 até R$ 2.550,00" ~ "De R$ 1.530 até R$ 2.550",
+                         q10 == "De R$ 2.550,01 até R$ 3.570,00" ~ "De R$ 2.550 até R$ 3.570",
+                         q10 == "De R$ 3.570,01 até R$ 4.080,00" ~ "De R$ 3.570 até R$ 4.080",
+                         q10 == "De R$ 4.080,01 até R$ 6.120,00" ~ "De R$ 4.080 até R$ 6.120",
+                         q10 == "De R$ 6.120,01até R$ 7.650,00" ~ "De R$ 6.120 até R$ 7.650",
+                         q10 == "De R$ 7.650,01 até R$ 10.200,00" ~ "De R$ 7.650 até R$ 10.200",
+                         q10 == "Mais de R$ 10.200,01" ~ "Mais de R$ 10.200",
+                         q10 == "No Aplica" ~ "No Aplica",
+                         q10 == "No se le preguntó en este país o año" ~ "No se le preguntó en este país o año"),
+         q10new_12 = case_when(q10new_12 == 0 ~ "Sem renda",
+                               q10new_12 == 1 ~ "Até R$100",
+                               q10new_12 == 2 ~ "De R$100 até R$210",
+                               q10new_12 == 3 ~ "De R$211 até R$310",
+                               q10new_12 == 4 ~ "De R$311 até R$410",
+                               q10new_12 == 5 ~ "De R$411 até R$520",
+                               q10new_12 == 6 ~ "De R$521 até R$620",
+                               q10new_12 == 7 ~ "De R$621 até R$730",
+                               q10new_12 == 8 ~ "De R$731 até R$820",
+                               q10new_12 == 9 ~ "De R$821 até R$930",
+                               q10new_12 == 10 ~ "De R$931 até R$1040",
+                               q10new_12 == 11 ~ "De R$1041 até R$1130",
+                               q10new_12 == 12 ~ "De R$1131 até R$1240",
+                               q10new_12 == 13 ~ "De R$1241 até R$1400",
+                               q10new_12 == 14 ~ "De R$1401 até R$1550",
+                               q10new_12 == 15 ~ "De R$1551 até R$1860",
+                               q10new_12 == 16 ~ "Mais de R$1860",
+                               ),
+         q10g_12 = case_when(q10g_12 == 0 ~ "Sem renda",
+                               q10g_12 == 1 ~ "Até R$100",
+                               q10g_12 == 2 ~ "De R$100 até R$210",
+                               q10g_12 == 3 ~ "De R$211 até R$310",
+                               q10g_12 == 4 ~ "De R$311 até R$410",
+                               q10g_12 == 5 ~ "De R$411 até R$520",
+                               q10g_12 == 6 ~ "De R$521 até R$620",
+                               q10g_12 == 7 ~ "De R$621 até R$730",
+                               q10g_12 == 8 ~ "De R$731 até R$820",
+                               q10g_12 == 9 ~ "De R$821 até R$930",
+                               q10g_12 == 10 ~ "De R$931 até R$1040",
+                               q10g_12 == 11 ~ "De R$1041 até R$1130",
+                               q10g_12 == 12 ~ "De R$1131 até R$1240",
+                               q10g_12 == 13 ~ "De R$1241 até R$1400",
+                               q10g_12 == 14 ~ "De R$1401 até R$1550",
+                               q10g_12 == 15 ~ "De R$1551 até R$1860",
+                               q10g_12 == 16 ~ "Mais de R$1860",
+         ),
+  )
+
+foo <- 
+  bra %>% 
+  mutate_at(vars(tidyselect::vars_select(names(bra), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(bra), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(bra), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(bra), starts_with('q10', ignore.case = TRUE))), str_replace, "até", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(bra), starts_with('q10', ignore.case = TRUE))), str_replace, "hasta", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(bra), starts_with('q10', ignore.case = TRUE))), str_replace, "to", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+bra <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+bra <- 
+  bra %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII"),
+         pais = "Brazil") %>% 
+  left_join(ppp %>% 
+              filter(pais == "Brazil"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(bra$income))
+plot(density(bra$income, na.rm = TRUE))
+
+table(is.na(bra$incomepc))
+plot(density(bra$incomepc, na.rm = TRUE))
+
+bra <- 
+  bra %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(municipio, municipio10, r22:r23), as.character)
+
+lapop <- 
+  lapop %>%
+  bind_rows(bra)
+
+# Chile ----
+chl <- 
+  tibble(readstata13::read.dta13("Chile LAPOP merge 2006-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(chl$q10)
+table(chl$q10new_12)
+table(chl$q10new_14)
+table(chl$q10new_16)
+table(chl$q10new_18)
+
+foo <- 
+  chl %>% 
+  mutate_at(vars(tidyselect::vars_select(names(chl), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(chl), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(chl), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(chl), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(chl), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+chl <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+chl <- 
+  chl %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Chile"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(chl$income))
+plot(density(chl$income, na.rm = TRUE))
+
+table(is.na(chl$incomepc))
+plot(density(chl$incomepc, na.rm = TRUE))
+
+chl <- 
+  chl %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10), as.character)
+
+lapop <- 
+  lapop %>%
+  bind_rows(chl)
+
+# Colombia ----
+col <- 
+  tibble(readstata13::read.dta13("Colombia LAPOP merge 2004-2018 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(col$q10)
+table(col$q10new_12)
+table(col$q10new_14)
+table(col$q10new_16)
+table(col$q10new_18)
+
+col <- 
+  col %>% 
+  mutate(q10new_12 = case_when(q10new_12 == 0 ~ "Ningún ingreso",
+                               q10new_12 == 1 ~ "Menos de 90.000",
+                               q10new_12 == 2 ~ "Entre 90.000 - 180.000",
+                               q10new_12 == 3 ~ "Entre 180.000 - 270.000",
+                               q10new_12 == 4 ~ "Entre 270.000 - 360.000",
+                               q10new_12 == 5 ~ "Entre 360.000 - 450.000",
+                               q10new_12 == 6 ~ "Entre 450.000 - 540.000",
+                               q10new_12 == 7 ~ "Entre 540.000 - 630.000",
+                               q10new_12 == 8 ~ "Entre 630.000 - 710.000",
+                               q10new_12 == 9 ~ "Entre 710.000 - 800.000",
+                               q10new_12 == 10 ~ "Entre 800.000 - 940.000",
+                               q10new_12 == 11 ~ "Entre 940.000 - 1.100.000",
+                               q10new_12 == 12 ~ "Entre 1.100.000 - 1.600.000",
+                               q10new_12 == 13 ~ "Entre 1.600.000 - 2.100.000",
+                               q10new_12 == 14 ~ "Entre 2.100.000 - 3.200.000",
+                               q10new_12 == 15 ~ "Entre 3.200.000 - 4.300.000",
+                               q10new_12 == 16 ~ " Más de 4.300.000",
+         ),
+         q10g_12 = case_when(q10g_12 == 0 ~ "Ningún ingreso",
+                             q10g_12 == 1 ~ "Menos de 90.000",
+                             q10g_12 == 2 ~ "Entre 90.000 - 180.000",
+                             q10g_12 == 3 ~ "Entre 180.000 - 270.000",
+                             q10g_12 == 4 ~ "Entre 270.000 - 360.000",
+                             q10g_12 == 5 ~ "Entre 360.000 - 450.000",
+                             q10g_12 == 6 ~ "Entre 450.000 - 540.000",
+                             q10g_12 == 7 ~ "Entre 540.000 - 630.000",
+                             q10g_12 == 8 ~ "Entre 630.000 - 710.000",
+                             q10g_12 == 9 ~ "Entre 710.000 - 800.000",
+                             q10g_12 == 10 ~ "Entre 800.000 - 940.000",
+                             q10g_12 == 11 ~ "Entre 940.000 - 1.100.000",
+                             q10g_12 == 12 ~ "Entre 1.100.000 - 1.600.000",
+                             q10g_12 == 13 ~ "Entre 1.600.000 - 2.100.000",
+                             q10g_12 == 14 ~ "Entre 2.100.000 - 3.200.000",
+                             q10g_12 == 15 ~ "Entre 3.200.000 - 4.300.000",
+                             q10g_12 == 16 ~ " Más de 4.300.000",
+         ),
+  )
+
+foo <- 
+  col %>% 
+  mutate_at(vars(tidyselect::vars_select(names(col), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(col), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(col), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(col), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(col), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+col <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+col <- 
+  col %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Colombia"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(col$income))
+plot(density(col$income, na.rm = TRUE))
+
+table(is.na(col$incomepc))
+plot(density(col$incomepc, na.rm = TRUE))
+
+col <- 
+  col %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+lapop <- 
+  lapop %>%
+  bind_rows(col)
+
+# Costa Rica ----
+ctr <- 
+  tibble(readstata13::read.dta13("CostaRica LAPOP merge 2004-2018 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(ctr$q10)
+table(ctr$q10new_12)
+table(ctr$q10new_14)
+table(ctr$q10new_16)
+table(ctr$q10new_18)
+
+foo <- 
+  ctr %>% 
+  mutate_at(vars(tidyselect::vars_select(names(ctr), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(ctr), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ctr), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ctr), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ctr), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+ctr <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+ctr <- 
+  ctr %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Costa Rica"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(ctr$income))
+plot(density(ctr$incomeppp, na.rm = TRUE))
+
+table(is.na(ctr$incomepc))
+plot(density(ctr$incomepc, na.rm = TRUE))
+
+ctr <- 
+  ctr %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+lapop <- 
+  lapop %>%
+  bind_rows(ctr)
+
+
+# Dominican Republic ----
+dmr <- 
+  tibble(readstata13::read.dta13("DominicanRepublic LAPOP merge 2004-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(dmr$q10)
+table(dmr$q10new_12)
+table(dmr$q10new_14)
+table(dmr$q10new_16)
+table(dmr$q10new_18)
+
+dmr <-
+dmr %>% 
+  mutate(q10new_12 = case_when(q10new_12 == 1 ~ "Menos de 1,010 pesos",
+                               q10new_12 == 2 ~ "Entre 1,010 y 2,010 pesos",
+                               q10new_12 == 3 ~ "Entre 2,011 y 3,020 pesos",
+                               q10new_12 == 4 ~ "Entre 3,021 y 4,020 pesos",
+                               q10new_12 == 5 ~ "Entre 4,021 y 5,030 pesos",
+                               q10new_12 == 6 ~ "Entre 5,031 y 6,040 pesos",
+                               q10new_12 == 7 ~ "Entre 6,041 y 8,030 pesos",
+                               q10new_12 == 8 ~ "Entre 8,031 y 9,050 pesos",
+                               q10new_12 == 9 ~ "Entre 9,051 y 10,560 pesos",
+                               q10new_12 == 10 ~ "Entre 10,561 y 12,070 pesos",
+                               q10new_12 == 11 ~ "Entre 12,071 y 18,110 pesos",
+                               q10new_12 == 12 ~ "Entre 18,111 y 24,140 pesos",
+                               q10new_12 == 13 ~ "Entre 24141 y 48,280 pesos",
+                               q10new_12 == 14 ~ "Entre 48,281 y 60,350 pesos",
+                               q10new_12 == 15 ~ "Entre 60,351 y 72,420 pesos",
+                               q10new_12 == 16 ~ "Más de 72,420 pesos",
+                               ),
+         q10g_12 = case_when(q10g_12 == 1 ~ "Menos de 1,010 pesos",
+                               q10g_12 == 2 ~ "Entre 1,010 y 2,010 pesos",
+                               q10g_12 == 3 ~ "Entre 2,011 y 3,020 pesos",
+                               q10g_12 == 4 ~ "Entre 3,021 y 4,020 pesos",
+                               q10g_12 == 5 ~ "Entre 4,021 y 5,030 pesos",
+                               q10g_12 == 6 ~ "Entre 5,031 y 6,040 pesos",
+                               q10g_12 == 7 ~ "Entre 6,041 y 8,030 pesos",
+                               q10g_12 == 8 ~ "Entre 8,031 y 9,050 pesos",
+                               q10g_12 == 9 ~ "Entre 9,051 y 10,560 pesos",
+                               q10g_12 == 10 ~ "Entre 10,561 y 12,070 pesos",
+                               q10g_12 == 11 ~ "Entre 12,071 y 18,110 pesos",
+                               q10g_12 == 12 ~ "Entre 18,111 y 24,140 pesos",
+                               q10g_12 == 13 ~ "Entre 24141 y 48,280 pesos",
+                               q10g_12 == 14 ~ "Entre 48,281 y 60,350 pesos",
+                               q10g_12 == 15 ~ "Entre 60,351 y 72,420 pesos",
+                               q10g_12 == 16 ~ "Más de 72,420 pesos",
+         ),
+         )
+
+foo <- 
+  dmr %>% 
+  mutate_at(vars(tidyselect::vars_select(names(dmr), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(dmr), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(dmr), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(dmr), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(dmr), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+dmr <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+dmr <- 
+  dmr %>% 
+  mutate(pais = "Dominican Republic",
+         pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Dominican Republic"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(dmr$income))
+plot(density(dmr$incomeppp, na.rm = TRUE))
+
+table(is.na(dmr$incomepc))
+plot(density(dmr$incomepcppp, na.rm = TRUE))
+
+dmr <- 
+  dmr %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(dmr)
+
+
+# Ecuador ----
+ecu <- 
+  tibble(readstata13::read.dta13("Ecuador LAPOP merge 2004-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(ecu$q10)
+table(ecu$q10new_12)
+table(ecu$q10new_14)
+table(ecu$q10new_16)
+table(ecu$q10new_18)
+
+foo <- 
+  ecu %>% 
+  mutate_at(vars(tidyselect::vars_select(names(ecu), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(ecu), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ecu), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ecu), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ecu), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+ecu <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+ecu <- 
+  ecu %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Ecuador"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(ecu$income))
+plot(density(ecu$incomeppp, na.rm = TRUE))
+
+table(is.na(ecu$incomepc))
+plot(density(ecu$incomepc, na.rm = TRUE))
+
+ecu <- 
+  ecu %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character) %>% 
+  mutate_at(vars(r2, r13), as.numeric)
+
+lapop <- 
+  lapop %>%
+  bind_rows(ecu)
+
+# El Salvador ----
+slv <- 
+  tibble(readstata13::read.dta13("ElSalvador LAPOP merge 2004-2018 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(slv$q10)
+table(slv$q10new_12)
+table(slv$q10new_14)
+table(slv$q10new_16)
+table(slv$q10new_18)
+
+table(slv$q10g_12)
+table(slv$q10g_14)
+table(slv$q10g_16)
+
+
+slv <- 
+  slv %>% 
+  mutate(q10 = case_when(q10 == 1 ~ "Menos de $45",
+                         q10 == 2 ~ "Entre $46- $90",
+                         q10 == 3 ~ "$91-$144",
+                         q10 == 4 ~ "$145-$288",
+                         q10 == 5 ~ "$289-$432",
+                         q10 == 6 ~ "$433-$576",
+                         q10 == 7 ~ "$577-$720",
+                         q10 == 8 ~ "$721-1008",
+                         q10 == 9 ~ "$1009-$1440",
+                         q10 == 10 ~ "$1441 y más",
+                         ),
+         q10new_12 = case_when(q10new_12 == 0 ~ "Ningún ingreso",
+                               q10new_12 == 1 ~ "Menos de $30",
+                               q10new_12 == 2 ~ "$30 - $50",
+                               q10new_12 == 3 ~ "$51 - $60",
+                               q10new_12 == 4 ~ "$61 - $90",
+                               q10new_12 == 5 ~ "$91 - $140",
+                               q10new_12 == 6 ~ "$141 - $180",
+                               q10new_12 == 7 ~ "$181 - $270",
+                               q10new_12 == 8 ~ "$271 - $360",
+                               q10new_12 == 9 ~ "$361 - $450",
+                               q10new_12 == 10 ~ "$451 - $540",
+                               q10new_12 == 11 ~ "$541 - $630",
+                               q10new_12 == 12 ~ "$631 - $810",
+                               q10new_12 == 13 ~ "$811 - $1,080",
+                               q10new_12 == 14 ~ "$1,081 - $1,440",
+                               q10new_12 == 15 ~ "$1,441 - $1,800",
+                               q10new_12 == 16 ~ "Más de $1,800",
+         )
+  )
+
+foo <- 
+  slv %>% 
+  mutate_at(vars(tidyselect::vars_select(names(slv), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(slv), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(slv), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(slv), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(slv), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+slv <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+slv <- 
+  slv %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "El Salvador"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(slv$income))
+plot(density(slv$incomeppp, na.rm = TRUE))
+
+table(is.na(slv$incomepc))
+plot(density(slv$incomepcppp, na.rm = TRUE))
+
+slv <- 
+  slv %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(slv)
+
+
+
+# Guatemala ----
+gua <- 
+  tibble(readstata13::read.dta13("Guatemala LAPOP merge 2004-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(gua$q10)
+table(gua$q10new_12)
+table(gua$q10new_14)
+table(gua$q10new_16)
+table(gua$q10new_18)
+
+table(gua$q10g_12)
+table(gua$q10g_14)
+table(gua$q10g_16)
+
+gua <- 
+gua %>% 
+  mutate(q10new_12 = case_when(q10new_12 == 0 ~ "Ningún ingreso",
+                               q10new_12 == 1 ~ "Menos de 360 quetzales",
+                               q10new_12 == 2 ~ "Entre 360 y 720 quetzales",
+                               q10new_12 == 3 ~ "Entre 721 y 1080 quetzales",
+                               q10new_12 == 4 ~ "Entre 1081 y 1440 quetzales",
+                               q10new_12 == 5 ~ "Entre 1441 y 1800 quetzales",
+                               q10new_12 == 6 ~ "Entre 1801 y 2160 quetzales",
+                               q10new_12 == 7 ~ "Entre 2161 y 2530 quetzales",
+                               
+                               q10new_12 == 8 ~ "Entre 2531 y 2870 quetzales",
+                               q10new_12 == 9 ~ "Entre 2871 y 3240 quetzales",
+                               q10new_12 == 10 ~ "Entre 3241 y 3780 quetzales",
+                               q10new_12 == 11 ~ "Entre 3781 y 4320 quetzales",
+                               q10new_12 == 12 ~ "Entre 4321 y 5400 quetzales",
+                               q10new_12 == 13 ~ "Entre 5401 y 6480 quetzales",
+                               q10new_12 == 14 ~ "Entre 6481 y 8640 quetzales",
+                               q10new_12 == 15 ~ "Entre 8641 y 10810 quetzales",
+                               q10new_12 == 16 ~ "Más de 10810 quetzales",
+                               ),
+         )
+
+foo <- 
+  gua %>% 
+  mutate_at(vars(tidyselect::vars_select(names(gua), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(gua), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(gua), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(gua), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(gua), starts_with('q10', ignore.case = TRUE))), str_replace, "a", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(gua), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+gua <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+gua <- 
+  gua %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Guatemala"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(gua$income))
+plot(density(gua$incomeppp, na.rm = TRUE))
+
+table(is.na(gua$incomepcppp))
+plot(density(gua$incomepcppp, na.rm = TRUE))
+
+gua <- 
+  gua %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(gua)
+
+
+# Honduras ----
+hon <- 
+  tibble(readstata13::read.dta13("Honduras LAPOP merge 2004-2018 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(hon$q10)
+table(hon$q10new_12)
+table(hon$q10new_14)
+table(hon$q10new_16)
+table(hon$q10new_18)
+
+foo <- 
+  hon %>% 
+  mutate_at(vars(tidyselect::vars_select(names(hon), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(hon), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(hon), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  #mutate_at(vars(tidyselect::vars_select(names(hon), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  #mutate_at(vars(tidyselect::vars_select(names(hon), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+hon <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+hon <- 
+  hon %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Honduras"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(hon$incomeppp))
+plot(density(hon$incomeppp, na.rm = TRUE))
+
+hon <- 
+  hon %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(hon)
+
+
+# Jamaica ----
+jam <- 
+  tibble(readstata13::read.dta13("Jamaica LAPOP merge 2006-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(jam$q10)
+table(jam$q10new_12)
+table(jam$q10new_14)
+table(jam$q10new_16)
+table(jam$q10new_18)
+
+foo <- 
+  jam %>% 
+  mutate_at(vars(tidyselect::vars_select(names(jam), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(jam), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(jam), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  #mutate_at(vars(tidyselect::vars_select(names(jam), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(jam), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+jam <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+jam <- 
+  jam %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Jamaica"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(jam$incomeppp))
+plot(density(jam$incomeppp, na.rm = TRUE))
+
+jam <- 
+  jam %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(jam)
+
+
+# Nicaragua ----
+nic <- 
+  tibble(readstata13::read.dta13("Nicaragua LAPOP merge 2004-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(nic$q10)
+table(nic$q10new_12)
+table(nic$q10new_14)
+table(nic$q10new_16)
+table(nic$q10new_18)
+
+foo <- 
+  nic %>% 
+  mutate_at(vars(tidyselect::vars_select(names(nic), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(nic), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(nic), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  #mutate_at(vars(tidyselect::vars_select(names(nic), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  #mutate_at(vars(tidyselect::vars_select(names(nic), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+nic <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+nic <- 
+  nic %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Nicaragua"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(nic$incomeppp))
+plot(density(nic$incomeppp, na.rm = TRUE))
+
+nic <- 
+  nic %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(nic)
+
+# Panama ----
+pan <- 
+  tibble(readstata13::read.dta13("Panama LAPOP merge 2004-2018 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(pan$q10)
+table(pan$q10new_12)
+table(pan$q10new_14)
+table(pan$q10new_16)
+table(pan$q10new_18)
+
+foo <- 
+  pan %>% 
+  mutate_at(vars(tidyselect::vars_select(names(pan), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(pan), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(pan), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  #mutate_at(vars(tidyselect::vars_select(names(pan), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  #mutate_at(vars(tidyselect::vars_select(names(pan), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+pan <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+pan <- 
+  pan %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Panama"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(pan$incomeppp))
+plot(density(pan$incomeppp, na.rm = TRUE))
+
+pan <- 
+  pan %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c), as.character)
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(pan)
+
+# Paraguay ----
+par <- 
+  tibble(readstata13::read.dta13("Paraguay LAPOP merge 2006-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(par$q10)
+table(par$q10new_12)
+table(par$q10new_14)
+table(par$q10new_16)
+table(par$q10new_18)
+
+par <- 
+par %>% 
+  mutate(q10 = case_when(q10 == 0 ~ "Ningún ingreso",
+                         q10 == 1 ~ "Menos de 137.000",
+                         q10 == 2 ~ "De 137.001 a 275.000",
+                         q10 == 3 ~ "De 275.001 a 550.000",
+                         q10 == 4 ~ "De 550.001 a 825.000",
+                         q10 == 5 ~ "De 825.001 a 1.100.000",
+                         q10 == 6 ~ "De 1.100.001 a 1.650.000",
+                         q10 == 7 ~ "De 1.650.001 a 2.200.000",
+                         q10 == 8 ~ "De 2.200.001 a 2.750.000",
+                         q10 == 9 ~ "De 2.750.001 a 4.125.000",
+                         q10 == 10 ~ "De 4.125.001 o más",
+                         ))
+
+foo <- 
+  par %>% 
+  mutate_at(vars(tidyselect::vars_select(names(par), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(par), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(par), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(par), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(par), starts_with('q10', ignore.case = TRUE))), str_replace, "a", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+par <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+par <- 
+  par %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Paraguay"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(par$incomeppp))
+plot(density(par$incomeppp, na.rm = TRUE))
+
+par <- 
+  par %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c, a1:a3), as.character)
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(par)
+
+# Peru ----
+per <- 
+  tibble(readstata13::read.dta13("Peru LAPOP merge 2006-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(per$q10)
+table(per$q10new_12)
+table(per$q10new_14)
+table(per$q10new_16)
+table(per$q10new_18)
+
+foo <- 
+  per %>% 
+  mutate_at(vars(tidyselect::vars_select(names(per), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(per), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(per), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(per), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(per), starts_with('q10', ignore.case = TRUE))), str_replace, "a", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+per <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+per <- 
+  per %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Peru"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(per$incomeppp))
+plot(density(per$incomeppp, na.rm = TRUE))
+
+per <- 
+  per %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio, municipio10, q3c, a1:a3), as.character)
+
+
+
+lapop <- 
+  lapop %>%
+  bind_rows(per)
+
+# Uruguay ----
+ury <- 
+  tibble(readstata13::read.dta13("Uruguay LAPOP merge 2007-2019 v1.0_W.dta")) %>% 
+  filter(year >= 2010)
+
+table(ury$q10)
+table(ury$q10new_12)
+table(ury$q10new_14)
+table(ury$q10new_16)
+table(ury$q10new_18)
+
+foo <- 
+  ury %>% 
+  mutate_at(vars(tidyselect::vars_select(names(ury), starts_with('q10', ignore.case = TRUE))), as.character) %>% 
+  mutate_at(vars(tidyselect::vars_select(names(ury), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\,") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ury), starts_with('q10', ignore.case = TRUE))), str_remove_all, "\\.") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ury), starts_with('q10', ignore.case = TRUE))), str_replace, "and", "\\-") %>%
+  mutate_at(vars(tidyselect::vars_select(names(ury), starts_with('q10', ignore.case = TRUE))), str_replace, "y", "\\-") %>%
+  mutate(income = if_else(wave == 2010, q10,
+                          if_else(wave == 2012, q10new_12,
+                                  if_else(wave == 2014, q10new_14,
+                                          if_else(wave == 2016, q10new_16, q10new_18
+                                          )))),
+         income = str_remove_all(income, "[:alpha:]"),
+         income = str_remove_all(income, "\\[\\d+\\]"),
+         
+         incomepc = if_else(wave == 2012, q10g_12,
+                            if_else(wave == 2014, q10g_14, q10g_16
+                            )),
+         incomepc = str_remove_all(incomepc, "[:alpha:]"),
+         incomepc = str_remove_all(incomepc, "\\[\\d+\\]"),
+  )
+
+table(foo$income)
+foo1 <- as_tibble(str_split(foo$income, "-", 2, simplify = TRUE))
+
+table(foo$incomepc)
+foo3 <- as_tibble(str_split(foo$incomepc, "-", 2, simplify = TRUE))
+
+ury <- 
+  foo %>% 
+  select(-income, -incomepc) %>% 
+  bind_cols(
+    foo1 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             income = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                              if_else(is.na(V2) & qV1 == 1, V1,
+                                      if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             income = na_if(income, 0)
+      ) %>% 
+      select(income)
+  ) %>%  
+  bind_cols(
+    foo3 %>% 
+      mutate_all(str_remove_all, "\\$") %>% 
+      mutate_all(as.numeric) %>% 
+      mutate(qV1 = ntile(V1, 5),
+             incomepc = if_else(!is.na(V1) & !is.na(V2), (V1+V2)/2,
+                                if_else(is.na(V2) & qV1 == 1, V1,
+                                        if_else(is.na(V2) & qV1 == 5, V1*2, 0))),
+             incomepc = na_if(incomepc, 0)
+      ) %>% 
+      select(incomepc)
+  )
+
+ury <- 
+  ury %>% 
+  mutate(pais = stringi::stri_trans_general(pais, "Latin-ASCII")) %>% 
+  left_join(ppp %>% 
+              filter(pais == "Uruguay"),
+            by = c("pais", "year")) %>% 
+  mutate(incomeppp = income/pppexrate,
+         incomepcppp = incomepc/pppexrate,
+  )
+
+rm(foo, foo1, foo2, foo3)
+
+table(is.na(ury$incomeppp))
+plot(density(ury$incomeppp, na.rm = TRUE))
+
+ury <- 
+  ury %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, #municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, #leng4,
+         r1:r26, # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         #dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, #inteval
+  ) %>% 
+  mutate_if(is.factor, as.character) %>% 
+  mutate_at(vars(prov, municipio), as.character)
+
+lapop <- 
+  lapop %>%
+  bind_rows(ury)
+
+## Final LAPOP database ----
+lapop_raw <- lapop 
+
+# Variables for analysis ----
+lapop <- 
+  lapop_raw %>% 
+  select(pais, wave, year, idnum, estratopri, prov, municipio, municipio10,
+         ur, tamano, idiomaq, fecha, wt, weight1500,
+         sex, q2, ed, nationality, 
+         q11, q11n, q3c, q3cn, # Marital status and religion
+         income, incomepc, incomeppp, incomeppp,
+         colorr, etid, leng1, leng4,
+         r1, r3, r4, r4a, r5, r6, r7, r8, r12, r14, r15,  # Household assets
+         ocup1a, ocup4a, # Ocupation status
+         dis11, #dis11n, # Discrimination
+         a1, a2, a3, www1, b1:b6, d1:d8, eff1:eff2, # Media and political opinions
+         it1, m1, m2, #Interpersonal trust, Executiv and Congress approval
+         pn4, # Satisfaction with Democracy
+         ros4, # Preference for redistribution
+         l1, # Political ideology
+         pol1, # Political Interest 
+         q5b, # Importance and religion,
+         vb1, vb10, vb2, vb20, 
+         colori, sexi, intid, inteval
+  ) %>% 
+  mutate(# ID
+    idobs = str_c(str_sub(pais, end = 3), "_", str_sub(wave, start = 3), "_", idnum),
+    # Age
+    age = q2,
+    # Color
+    colorr = na_if(colorr, 12),
+    colori = na_if(colori, 12),
+    colorr_fct = if_else(colorr <= 3, "Light",
+                         if_else(colorr %in% seq(4,8), "Medium",
+                                 "Dark")),
+    colorr_fct = fct_relevel(colorr_fct, "Light", "Medium", "Dark"),
+    # Etnia
+    etnia = if_else(etid == "Blanca", "White", 
+                    if_else(etid %in% c("Mestiza", "Mestiza o trigueña", "Mestiza/India", "Mixto", "Mulata", "Zamba"), "Mestiza or Mulata",
+                            if_else(etid %in% c("Indígena", "De la Amazonia", "Indígena - originaria", "Indios Orientales", "Quechua", "Aymara"), "Indigenous",
+                                    if_else(etid %in% c("Afro Dominican", "Negra", "Negra (Afro-boliviano)", "Negra o Afro-argentina", "Negra/Domincano Negro", "Chino"), "Afro",
+                                            ifelse(etid %in% c("Amarillo", "Oriental", "Ladina", "Otra"), "Other",
+                                                   ""))))),
+    etnia = na_if(etnia, ""),
+    # Rural
+    rural = if_else(ur == "Rural", 1, 0),
+    
+    # Cohorte 
+    cohorte = if_else(q2 > 50, 1, 
+                      if_else(q2 >= 40 & q2 <= 50, 2, 
+                              if_else(q2 >= 26 & q2 <= 40, 3,
+                                      if_else(q2 < 26, 4, 
+                                              0)))),
+    # Preferences for redistribution 
+    pref_red = ros4,
+    
+    # Left vs. Right
+    pol_ideol = case_when(l1 == 1 ~ 5,
+                          l1 == 2 ~ 4,
+                          l1 == 3 ~ 3,
+                          l1 == 4 ~ 2,
+                          l1 == 5 ~ 1,
+                          
+                          l1 == 6 ~ -1,
+                          l1 == 7 ~ -2,
+                          l1 == 8 ~ -3,
+                          l1 == 9 ~ -4,
+                          l1 == 10 ~ -5,
+    )
+  ) %>% 
+  filter(!is.na(etnia) & !is.na(colorr))
+
+# PCA Hosuehold wealth Index by country and wave ----
+paises <- 
+  c(lapop %>% 
+      group_by(pais) %>% 
+      summarise() %>% 
+      mutate(pais = as.character(pais)))$pais
+
+olas <- 
+  c(lapop %>% 
+      group_by(wave) %>% 
+      summarise()%>% 
+      mutate(wave = as.character(wave)))$wave
+
+# Index includes: Television, Fridge, Washing Machine, Microwave, Telephone, Cellphone, 
+# Number of cars, Motocycles, Drinking Water at home, Bathroom at home, Computer
+dta <- tibble()
+for (p in paises) {
+  
+  foo <- 
+    lapop %>% 
+    filter(pais == p)
+  
+  for (i in olas) {
+    
+    foo1 <- 
+      foo %>% 
+      filter(wave == i)
+    
+    if (dim(foo1)[1] != 0) {
+      
+      
+      #for (c in cohorte) {
+      
+      #foo2 <- 
+      #   foo1 %>% 
+      #    filter(cohorte == c)
+      
+      #if (dim(foo2)[1] != 0) {
+
+      
+      foo2_1 <- 
+        foo1 %>% 
+        mutate(autos = if_else(r5 == "One", 1,
+                               if_else(r5 == "Two", 2,
+                                       if_else(r5 == "Three or more", 3, 0
+                                       )))) %>%
+        select(idobs, pais, wave, year, idnum, wt, ed, incomeppp, incomeppp, autos, r1:r15) %>% 
+        mutate_at(vars(r1:r15), funs(if_else(. == "Sí", 1, 0))) %>% 
+        select(-r5) %>% 
+        drop_na()
+      
+      #pca <- PCA(foo4_1[,-c(1:7)], scale.unit = TRUE, graph = FALSE) #  col.w = foo2$wt,
+      pca1 <- prcomp(foo2_1[,-c(1:7)])
+      summary(pca1)
+      ppca1 <- as_tibble(predict(pca1))
+      
+      foo2_2 <- 
+        foo1 %>% 
+        mutate(autos = if_else(r5 == "One", 1,
+                               if_else(r5 == "Two", 2,
+                                       if_else(r5 == "Three or more", 3, 0
+                                       )))) %>%
+        select(idobs, pais, wave, year, idnum, wt, ed, incomeppp, autos, r1:r15) %>% 
+        mutate_at(vars(r1:r15), funs(if_else(. == "Sí", 1, 0))) %>% 
+        select(-r5) %>% 
+        drop_na()
+      
+      #pca2 <- PCA(foo4_2[,-c(1:7)], row.w = foo4_2$wt, scale.unit = TRUE, graph = FALSE) 
+      pca2 <- prcomp(foo2_2[,-c(1:8)])
+      summary(pca2)
+      ppca2 <- as_tibble(predict(pca2))
+      
+      foo3_1 <- 
+        foo2_1 %>% 
+        mutate(riq1 = ppca1$PC1,
+               cor = cor(riq1, ed),
+               riq1 = if_else(cor > 0 , riq1, -riq1),
+               riq1 = riq1 - min(riq1, na.rm = TRUE),
+               riq1_std = (riq1 - mean(riq1, na.rm = TRUE))/sd(riq1, na.rm = TRUE),
+               riq1_unif = (riq1 - min(riq1, na.rm = TRUE))/(max(riq1, na.rm = TRUE) - min(riq1, na.rm = TRUE)),
+               qtlriq1 = weighted_ntile(riq1_std, 5, weights = wt),
+               dclriq1 =  weighted_ntile(riq1_std, 10, weights = wt),
+               pctriq1 =  weighted_ntile(riq1_std, 100, weights = wt),
+        ) %>% 
+        select(idobs, pais, wave, year, idnum, ed, incomeppp, riq1, riq1_std:pctriq1) %>% 
+        distinct() %>% 
+        group_by(idobs) %>% 
+        filter(n() == 1) %>% 
+        ungroup()
+      
+      foo3_2 <-
+        foo2_2 %>% 
+        mutate(riq2 = ppca2$PC1,
+               cor = cor(riq2, ed),
+               riq2 = if_else(cor > 0 , riq2, -riq2),
+               riq2 = riq2 - min(riq2, na.rm = TRUE),
+               riq2_std = (riq2 - mean(riq2, na.rm = TRUE))/sd(riq2, na.rm = TRUE),
+               riq2_unif = (riq2 - min(riq2, na.rm = TRUE))/(max(riq2, na.rm = TRUE) - min(riq2, na.rm = TRUE)),
+               qtlriq2 = weighted_ntile(riq2_std, 5, weights = wt),
+               dclriq2 =  weighted_ntile(riq2_std, 10, weights = wt),
+               pctriq2 =  weighted_ntile(riq2_std, 100, weights = wt),
+        ) %>% 
+        select(idobs, pais, wave, year, idnum, ed, incomeppp, riq2, riq2_std:pctriq2) %>% 
+        distinct() %>% 
+        group_by(idobs) %>% 
+        filter(n() == 1) %>% 
+        ungroup()
+      
+      foo4 <- 
+        foo3_2 %>% 
+        left_join(foo3_1)
+      
+      dta <-  
+        bind_rows(dta, foo4)
+      
+      #}
+      #}
+    }
+  }
+}
+
+rm(foo, foo1, foo2_1, foo2_2, foo3_1, foo3_2, foo4)
+
+summary(dta$riq1)
+summary(dta$riq2)
+
+
+dta %>% 
+  ggplot(aes(riq1)) + geom_density()
+
+dta %>% 
+  ggplot(aes(riq2)) + geom_density()
+
+dta %>% 
+  mutate(riq1 = round(riq1, 2),
+         riq2 = round(riq2, 2)
+  ) %>% 
+  group_by(riq1) %>% 
+  summarise(riq2 = mean(riq2, na.rm = TRUE)) %>% 
+  ggplot(aes(riq1, riq2)) +
+  geom_jitter() +
+  geom_smooth(method = "lm")
+
+
+dta %>% 
+  mutate(riq1 = round(riq1, 2)) %>% 
+  group_by(riq1) %>% 
+  summarise(ed = mean(ed, na.rm =TRUE)) %>% 
+  ggplot(aes(log(riq1), ed)) +
+  geom_jitter() +
+  geom_smooth(method = "lm")
+
+dta %>% 
+  mutate(riq2 = round(riq2, 2)) %>% 
+  group_by(riq2) %>% 
+  summarise(ed = mean(ed, na.rm =TRUE)) %>% 
+  ggplot(aes(riq2, ed)) +
+  geom_jitter() +
+  geom_smooth(method = "lm")
+
+dta %>% 
+  mutate(incomeppp = round(incomeppp, 2)) %>% 
+  group_by(incomeppp) %>% 
+  summarise(ed = mean(ed, na.rm =TRUE)) %>% 
+  ggplot(aes(log(incomeppp), ed)) +
+  geom_jitter() +
+  geom_smooth(method = "lm")
+
+dta %>% 
+  mutate(incomeppp = round(incomeppp, 2)) %>% 
+  group_by(incomeppp) %>% 
+  summarise(riq2 = mean(riq2, na.rm =TRUE)) %>% 
+  ggplot(aes(log(incomeppp), riq2)) +
+  geom_jitter() +
+  geom_smooth(method = "lm")
+
+dta <- 
+  dta %>% 
+  group_by(idobs) %>% 
+  filter(n() == 1) %>% 
+  ungroup()
+
+any(table(dta$idobs)>1)
+
+lapop <- 
+  lapop %>% 
+  group_by(idobs) %>% 
+  filter(n() == 1) %>% 
+  ungroup()
+
+lapop <- 
+  dta %>% 
+  left_join(lapop %>% 
+              distinct()) %>% 
+  distinct()
+
+# Ethnic-Race mayorities/minorities ----
+# Ethnicity
+foo <- 
+  lapop %>% 
+  group_by(pais, year, etnia) %>%
+  count() %>%
+  ungroup() 
+
+paises <- c(foo %>% 
+              group_by(pais) %>% 
+              summarise())$pais
+años <- as.numeric(levels(as.factor(foo$year)))
+dta <- tibble()
+
+for (i in paises) {
+  
+  foo1 <- 
+    foo %>% 
+    filter(pais == i)
+  
+  for (j in años) {
+    
+    foo2 <- 
+      foo1 %>% 
+      filter(year == j)
+    
+    if (dim(foo2)[1] != 0) {
+      
+      foo3 <- 
+        foo2 %>% 
+        mutate(shr_etnia = n/sum(n),
+               etnia_major = if_else(shr_etnia == max(shr_etnia), 1, 0)) %>% 
+        arrange(-shr_etnia) %>% 
+        bind_cols(etnia_rank = seq(1, nrow(foo2))) %>% 
+        select(-n)
+      
+      dta <- 
+        bind_rows(dta, foo3)
+    }
+  }
+}
+
+lapop <- left_join(lapop, dta)
+
+rm(dta, foo, foo1, foo2, foo3)
+
+# Race
+foo <- 
+  lapop %>% 
+  group_by(pais, year, colorr) %>%
+  count() %>%
+  ungroup() 
+
+paises <- c(foo %>% 
+              group_by(pais) %>% 
+              summarise())$pais
+años <- as.numeric(levels(as.factor(foo$year)))
+dta <- tibble()
+
+for (i in paises) {
+  
+  foo1 <- 
+    foo %>% 
+    filter(pais == i)
+  
+  for (j in años) {
+    
+    foo2 <- 
+      foo1 %>% 
+      filter(year == j)
+    
+    if (dim(foo2)[1] != 0) {
+      
+      foo3 <- 
+        foo2 %>% 
+        mutate(shr_race = n/sum(n),
+               race_major = if_else(shr_race == max(shr_race), 1, 0)) %>% 
+        arrange(-shr_race) %>% 
+        bind_cols(race_rank = seq(1, nrow(foo2))) %>% 
+        select(-n)
+      
+      dta <- 
+        bind_rows(dta, foo3)
+    }
+  }
+}
+
+lapop <- left_join(lapop, dta)
+
+rm(dta, foo, foo1, foo2, foo3)
+
+
+# Race (grouped)
+foo <- 
+  lapop %>% 
+  group_by(pais, year, colorr_fct) %>%
+  count() %>%
+  ungroup() 
+
+paises <- c(foo %>% 
+              group_by(pais) %>% 
+              summarise())$pais
+años <- as.numeric(levels(as.factor(foo$year)))
+dta <- tibble()
+
+for (i in paises) {
+  
+  foo1 <- 
+    foo %>% 
+    filter(pais == i)
+  
+  for (j in años) {
+    
+    foo2 <- 
+      foo1 %>% 
+      filter(year == j)
+    
+    if (dim(foo2)[1] != 0) {
+      
+      foo3 <- 
+        foo2 %>% 
+        mutate(shr_race_fct = n/sum(n),
+               race_fct_major = if_else(shr_race_fct == max(shr_race_fct), 1, 0)) %>% 
+        arrange(-shr_race_fct) %>% 
+        bind_cols(racef_fct_rank = seq(1, nrow(foo2))) %>% 
+        select(-n)
+      
+      dta <- 
+        bind_rows(dta, foo3)
+    }
+  }
+}
+
+lapop <- left_join(lapop, dta)
+
+rm(dta, foo, foo1, foo2, foo3)
+
+
+
+# Export database ----
+setwd("~/Documents/Tesis/Tesis PSE/Datos")
+write_csv(lapop, "lapop.csv")
+haven::write_dta(lapop, "lapop.dta")

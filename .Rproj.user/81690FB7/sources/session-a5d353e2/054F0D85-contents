@@ -1,0 +1,362 @@
+#########################################################
+#### Skin tone inequality ----
+#########################################################
+# Data ----
+
+lapop_countries <- 
+  read_csv("~/Dropbox/Papers/published/UCR/previous versions/data_valuable/lapop_countries.csv") |> 
+  mutate(
+    skin_tone_vgt = ntile(skin_tone, 20),
+    skin_tone_tc = case_when(
+      skin_tone >= quantile(skin_tone, .99) ~ quantile(skin_tone, .99),
+      skin_tone <= quantile(skin_tone, .01) ~ quantile(skin_tone, .01),
+      TRUE ~ skin_tone
+    )
+  )
+
+lapop_regions_final <-
+  read_csv("~/Dropbox/Papers/published/UCR/previous versions/data_valuable/lapop_regions_final.csv") %>% 
+  filter(unbalanced == 0) |> 
+  mutate(
+    skin_tone_vgt = ntile(skin_tone, 20),
+    skin_tone_tc = case_when(
+      skin_tone >= quantile(skin_tone, .99) ~ quantile(skin_tone, .99),
+      skin_tone <= quantile(skin_tone, .01) ~ quantile(skin_tone, .01),
+      TRUE ~ skin_tone
+    )
+  )
+
+lapop_regions_final <- 
+  lapop_regions_final %>% 
+  select(-region) %>% 
+  left_join(
+    lapop_regions_final %>% 
+      group_by(country_region, countrycode, region) %>% 
+      summarise() %>% 
+      ungroup() %>% 
+      filter(!is.na(region))
+  )
+
+
+### Plots -----
+# GDP pc ----
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, log(gdppc))
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 1), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "GDP pc (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+# Inequality ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, gini)
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Income Gini",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+# Poverty ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, poverty)
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Poverty at $1.90 a day (2011 PPP) (%)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+# Productivity ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, log(lpxr))
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Labor productivity level (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+# Institutions ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, v2pepwrsoc)
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Power distributed by social group index",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+# Regions: nightlight density and Skin tone Inequality ----
+
+
+lapop_regions_final %>% 
+  ggplot(
+    aes(skin_tone_tc, log(nlpc))
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Nightlight density (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+
+### Maps ----
+sf_use_s2(TRUE)
+lapop_gadm_sf <-
+  st_read("~/Dropbox/Papers/UCR/UCR_01.23/Data/lapop_gadm.shp") %>%
+  st_simplify(preserveTopology = FALSE, dTolerance = 1000) %>%
+  mutate(
+    cntry_r = case_when(
+      cntry_r == "AMJS" ~ "CRI_Amsj",
+      cntry_r == "Urbano Bajura" ~ "CRI_Urb_Bajura",
+      cntry_r == "Rural Bajura" ~ "CRI_Rur_Bajura",
+      cntry_r == "Urbano Central" ~ "CRI_Urb_Central",
+      cntry_r == "Rural Central" ~ "CRI_Rur_Central",
+      TRUE ~ cntry_r
+    ),
+    countrycode = str_sub(cntry_r, 1,3),
+  )
+
+## Skin tone maps ----
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+countries_shp <-
+  ne_countries(scale = "medium", returnclass = "sf") %>%
+  filter(gu_a3 %in% levels(factor(lapop_regions_final$countrycode))) %>%
+  select(gu_a3, geometry)
+
+foo <-
+  lapop_gadm_sf %>%
+  select(cntry_r, geometry) %>%
+  mutate(country_region = cntry_r) %>%
+  left_join(
+    lapop_regions_final
+  ) %>%
+  group_by(country_region) %>%
+  summarise_all(mean) 
+
+# Min skin tone ----
+min_perla <- round(min(foo$color_min, na.rm = T))
+max_perla <- round(max(foo$color_min, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+p1 <-
+  foo %>% 
+  ggplot() + geom_sf(aes(fill = (color_min),
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colours = perla_foo) +
+  theme_void() +
+  labs(fill = "Min.")  +
+  theme(legend.position = "bottom")
+
+# Quartile 25 ----
+min_perla <- round(min(foo$color_q25, na.rm = T))
+max_perla <- round(max(foo$color_q25, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+
+p2 <-
+  foo %>%
+  ggplot() + geom_sf(aes(fill = (color_q25),
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colours = perla_foo) +
+  theme_void() +
+  labs(fill = "Q.25 ")  +
+  theme(legend.position = "bottom")
+
+# Median ----
+min_perla <- round(min(foo$color_median, na.rm = T))
+max_perla <- round(max(foo$color_median, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+
+p3 <-
+  foo %>%
+  ggplot() + geom_sf(aes(fill = (color_median),
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colours = perla_foo) +
+  theme_void() +
+  labs(fill = "Median ")  +
+  theme(legend.position = "bottom")
+
+
+# Mean skin tone ----
+min_perla <- round(min(foo$color_mean, na.rm = T))
+max_perla <- round(max(foo$color_mean, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+p4 <-
+  foo %>% 
+  ggplot() + geom_sf(aes(fill = (color_mean),
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colours = perla_foo) +
+  theme_void() +
+  labs(fill = "Mean")  +
+  theme(legend.position = "bottom")
+
+
+# Quartile 75 ----
+min_perla <- round(min(foo$color_q75, na.rm = T))
+max_perla <- round(max(foo$color_q75, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+p5 <- 
+  foo %>% 
+  ggplot() + geom_sf(aes(fill = color_q75,
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colors = perla_foo) +
+  theme_void() +
+  labs(fill = "Q.75 ")  +
+  theme(legend.position = "bottom")
+
+# Max skin tone ----
+min_perla <- round(min(foo$color_max, na.rm = T))
+max_perla <- round(max(foo$color_max, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+p6 <- 
+  foo %>% 
+  ggplot() + geom_sf(aes(fill = color_q75,
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colors = perla_foo) +
+  theme_void() +
+  labs(fill = "Max. ")  +
+  theme(legend.position = "bottom")
+
+# Plot grid ----
+plot_grid(p1, p2, p3, p4, p5, p6, nrow = 2, ncol = 3)

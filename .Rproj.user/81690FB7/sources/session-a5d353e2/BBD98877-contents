@@ -1,0 +1,19 @@
+
+
+binsreg(
+  scale(lapop_analysis$trust),
+  lapop_analysis$colorr,
+  w = ~ factor(countrycode) + edc + age + sex + factor(year) + factor(mothers_ed_isced),
+  data = lapop_analysis,
+  weights = lapop_analysis$weight1500,
+  polyreg = 1
+)
+
+
+feols(
+  scale(dis_gov) ~ (colorr) |
+    cluster_enumerator_id + mothers_ed_isced + sex + age,
+  weights = ~ weight1500,
+  data = lapop_analysis,
+  cluster = ~ cluster_enumerator_id
+)

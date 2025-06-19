@@ -1,0 +1,33 @@
+foo |> 
+  filter(category == "Within Ethnoracial categories") |> 
+  ggplot(aes(war2, outcome, color = type, fill = type)) +
+  geom_col(position = position_dodge(width = 1), width = .8) +
+  # geom_point(position = position_dodge(width = 0.5), size = 6) +
+  scale_color_viridis(
+    option = "magma", discrete = TRUE, direction = 1, begin = 0.25, end = 0.75,
+    guide = guide_legend(nrow = 3)
+  ) +
+  scale_fill_viridis(
+    option = "magma", discrete = TRUE, direction = 1, begin = 0.25, end = 0.75,
+    guide = guide_legend(nrow = 3)
+  ) +
+  scale_shape(guide = guide_legend(nrow = 2)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(8), limits = c(0, 0.025)) +
+  labs(
+    x = expression(Within ~ Adjusted ~ R^2),
+    y = "",
+    color = "",
+    fill = ""
+  ) +
+  coord_cartesian(clip = "off", xlim = c(0.00, 0.026)) +
+  facet_wrap(~outcome, scales = "free_y", nrow = 2) +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.box = "horizontal",
+    legend.text = element_text(size = 14),
+    panel.grid.major.x = element_line(color = "grey", linetype = "dotted"),
+    panel.grid.major.y = element_blank(),
+    axis.text = element_text(size = 16),
+    strip.text.x = element_blank()
+  ) 

@@ -1,0 +1,4007 @@
+# Workspace ----
+rm(list = ls())
+library(pacman)
+pacman::p_load(
+  tidyverse, sf, haven, hutils,
+  ggridges, viridis, wesanderson,
+  ggExtra, ggrepel, kableExtra,
+  fixest, fastDummies, sensemakr,
+  cowplot, ggpubr,
+  srvyr, broom,
+  WeightIt
+)
+
+X11(type = "cairo")
+
+theme_set(ggthemes::theme_clean() +
+            theme(legend.position = "bottom",
+                  plot.background=element_blank(),
+                  legend.background = element_rect(color = NA)))
+
+select <- dplyr::select
+everything <- dplyr::everything
+
+setwd("~/Dropbox/Papers/UCR/UCR_01.23")
+
+# PERLA color palette ----
+perla_rgb <- col2rgb(c("#fcf2f3", "#f3dfda", "#e7bfb5", "#e4c8a3",
+                                "#bea07e", "#9c7b52", "#83654d", "#6f4f3a",
+                                "#513b2e", "#422811", "#373028"))
+                                
+perla_palette <- function (n, name = c("perla")) {
+  perla = rgb(perla_rgb[1,], perla_rgb[2,], perla_rgb[3,], maxColorValue = 252)
+  name = match.arg(name)
+  orig = eval(parse(text = name))
+  rgb = t(col2rgb(orig))
+  temp = matrix(NA, ncol = 3, nrow = n)
+  x = seq(0, 1, , length(orig))
+  xg = seq(0, 1, , n)
+  for (k in 1:3) {
+    hold = spline(x, rgb[, k], n = n)$y
+    hold[hold < 0] = 0
+    hold[hold > 255] = 255
+    temp[, k] = round(hold)
+  }
+  palette = rgb(temp[, 1], temp[, 2], temp[, 3], maxColorValue = 255)
+  palette
+}
+
+
+# Functions ----
+beta_adj <-
+  function(delta = 1, coef_long = coef_long, coef_short = coef_short, rmax = rmax, cor2_long = cor2_long, cor2_short = cor2_short){
+    
+    beta_adj = coef_long - delta*((coef_short - coef_long)*((rmax - cor2_long)/(cor2_long - cor2_short)))
+    
+    return(beta_adj)
+    
+  }
+
+linear_comb_test <- 
+  function(x, var1, var2){
+    
+    require(fixest)
+    
+    df <- fixest::degrees_freedom(x, "resid")
+    num <- unname(x$coefficients[var1] - x$coefficients[var2])
+    den <- unname(sqrt((x$se[var1])^2 + (x$se[var2])^2 - 2*x$cov.scaled[var1, var2]))
+    t <- abs(num/den)
+    p <- 2*pt(q=t, df=df, lower.tail=FALSE)
+    
+    return(p)
+  }
+
+# Specification curve 
+specifications <-
+  function(fixest_multi = fixest_multi, t = "t"){
+    
+    require(fixest, tidy)
+    
+    estimates <- tibble()
+    
+    for(i in 1:length(fixest_multi)){
+      m <- fixest_multi[[i]]
+      
+      # Estimates and Statistics
+      estimates <- 
+        estimates |> 
+        bind_rows(
+          tibble(
+            specification = i,
+            coef = m$coefficients[t],
+            se = m$se[t],
+            nobs = m$nobs,
+            cor2 = m$sq.cor,
+            # pseudor2 = m$pseudo_r2,
+          ) |> 
+            mutate(
+              uci95 = coef + 1.96*se,
+              lci95 = coef - 1.96*se,
+              
+              uci90 = coef + 1.64*se,
+              lci90 = coef - 1.64*se,
+            ) |> 
+            select(specification, coef, se, lci95, uci95, lci90, uci90, nobs, cor2)
+        )
+      
+    }
+    
+    return(estimates)
+    
+  }
+
+spec_curve <- 
+  function(fixest_multi = fixest_multi, t = "t", type = c("ols", "poisson")){
+    
+    require(fixest, tidy)
+    
+    # Estimates and SE
+    specific <- specifications(fixest_multi, t)
+    
+    # Fit-stat panel
+    fit_stats_matrix <- 
+      specific |> 
+      select(specification, nobs, cor2) |> 
+      mutate_if(
+        is.double,
+        funs(as.character(round(., 3)))
+      ) |> 
+      mutate(
+        nobs = as.character(nobs)
+      ) |> 
+      pivot_longer(!specification) |> 
+      mutate(
+        name = case_when(
+          name == "nobs" ~ "No. of Observations",
+          name == "cor2" ~ "Squared Corr.",
+          # name == "pseudor2" ~ "Pseudo R2",
+        )
+      )
+    
+    # Specification panel
+    covariates <- tibble()
+    
+    for(i in 1:length(fixest_multi)){
+      
+      m <- fixest_multi[[i]]
+      
+      if(i == 1){
+        
+        foo <- 
+          tibble(
+            specification = i,
+            covariates = NULL
+          )
+        
+      }else if(i == 2){
+        
+        foo <- 
+          tibble(
+            specification = i,
+            covariates = c(m$fixef_vars)
+          )
+        
+      }else{
+        
+        foo <- 
+          tibble(
+            specification = i,
+            covariates = c(m$fixef_vars, covs_names[1:(i-2)])
+          )
+        
+      }
+      
+      # Covariate names    
+      covariates <- 
+        covariates |> 
+        bind_rows(
+          foo
+        )
+      
+    }
+    
+    covariates_matrix <- 
+      covariates |> 
+      expand(specification, covariates) |> 
+      left_join(
+        covariates |> 
+          mutate(
+            value = "Yes"
+          )
+      ) |> 
+      mutate(
+        value = if_else(is.na(value), "No", value)
+      ) |> 
+      filter(!is.na(covariates)) |> 
+      arrange(
+        specification,
+        factor(covariates, c(m$fixef_vars, covs_names))
+      )  
+    
+    # Bounds
+    
+    coef_short <- specific$coef[1]
+    cor2_short <- specific$cor2[1]
+    
+    coef_long <- specific$coef[nrow(specific)]
+    cor2_long <- specific$cor2[nrow(specific)]
+    
+    adjusted_estimate <-
+      beta_adj(coef_long, coef_short, .8, cor2_long, cor2_short)
+      # coef_long - ((coef_short - coef_long)*((.8 - cor2_long)/(cor2_long - cor2_short)))
+    
+    # Plots
+    
+    # Estimates
+    p1 <- 
+      specific|> 
+      ggplot(aes(specification)) +
+      geom_hline(yintercept = 0) +
+      geom_hline(yintercept = adjusted_estimate, size = 1, alpha = .5, linetype = "dashed") +
+      geom_linerange(color = "grey", aes(y = coef, ymin = lci95, ymax = uci95), size=1.75, alpha = .66) +
+      geom_linerange(color = "grey", aes(y = coef, ymin = lci90, ymax = uci90), size=2.5, alpha = .33) +
+      geom_point(aes(y = coef), size = 3) +
+      # geom_point(aes(y = coef_adj_d.5), color = "yellow", shape = 21, size = 3) +
+      # geom_point(aes(y = coef_adj_d1), color = "blue", shape = 21, size = 3) +
+      # geom_point(aes(y = coef_adj_d2), color = "red", shape = 21, size = 3) +
+      labs(
+        x = "", y = ""
+      ) +
+      scale_x_continuous(breaks = NULL)
+    
+    if(type == "poisson"){
+      
+      p1 <- 
+      p1 #+ scale_y_continuous(labels = scales::percent)
+      
+    }
+    
+    # Fit stats
+    p2 <- 
+      fit_stats_matrix|> 
+      ggplot(aes(specification, name, label = value)) +
+      geom_text(size = 2) +
+      scale_y_discrete(limits=rev) +
+      scale_x_continuous(breaks = NULL) +
+      labs(x = "", y = "") +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        plot.background = element_blank(),
+        text = element_text(size = 6)
+      )
+    
+    # Specification matrix
+    p3 <- 
+      covariates_matrix |> 
+      # filter(!is.na(value))|>
+      ggplot(
+        aes(specification, 
+            factor(covariates, c(m$fixef_vars, covs_names)), 
+            color = value)
+      ) +
+      # geom_tile(lwd = 5, color = "white") +
+      geom_point(size = .75) +
+      scale_color_manual(values = (c("white", "black"))) +
+      scale_y_discrete(limits=rev, labels = c(rev(covs_labels), fe_labels)) +
+      scale_x_continuous(breaks = NULL) +
+      # scale_fill_manual(values = "grey") +
+      labs(x = "", y = "") +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        text = element_text(size = 6)
+      )
+    
+    # Grid with three graphs
+    plot_grid(
+      p1, p2, p3, 
+      nrow = 3, ncol = 1, 
+      align = "v",
+      rel_heights = c(1, 0.3, .5)
+    )
+    
+  }
+
+#
+
+# Setting a dictionary ----
+setFixest_dict(
+  c(
+    # Dependent variable
+    incomepppd = "Daily Income per capita",
+    # Treatment
+    colorr = "Skin tone",
+    # Fixed effects
+    year = "Year FE",
+    countrycode = "Country FE",
+    country_region = "Country region FE",
+    country_prov = "State/Province FE",
+    country_mun = "Municipality FE",
+    cluster_id = "Within-municipality strata and year FE",
+    # Covariates
+    sex = "Sex",
+    age = "Age",
+    ed = "Years of schooling",
+    ocupation = "Employment status",
+    localidad = "Locality size",
+    edocivil = "Marital status",
+    religion = "Religion",
+    etnia = "Ethno-racial identity",
+    remit = "Remittances",
+    colori = "Interviewer's skin tone",
+    intid = "Interviewer FE",
+    mothers_ed = "Mother's education",
+    ocupoit = "ILO Occupation"
+  )
+)
+
+
+# Data ----
+
+lapop <- 
+  tibble(read_rds("~/Dropbox/Papers/UCR/Datos/lapop.Rda"))|> 
+  mutate(
+    colorr = round(colorr),
+    etnia = fct_relevel(
+      etnia, "White", "Mestiza", "Mulata", "Indigenous", "Afro",  "Other"
+    ),
+    etnia2 = case_when(
+      etnia %in% c("Mestiza", "Mulata") ~ "Mestiza & Mulata",
+      TRUE ~ as.character(etnia)
+    ),
+    etnia2 = fct_relevel(
+      etnia2, "White", "Mestiza & Mulata", "Indigenous", "Afro",  "Other"
+    ),
+    age = round(age, 0),
+    incomepppd = incomeppp/30,
+    colori = round(colori),
+    ed = round(ed),
+    poor = if_else(incomepppd <= 2.15, 1, 0),
+    colori_fct = case_when(
+      colori %in% c(1:3) ~ "Light",
+      colori %in% c(4:7) ~ "Brown",
+      colori > 7 ~ "Dark",
+    ),
+    colori_fct = fct_relevel(
+      colori_fct, "Light", "Brown", "Dark"
+    ),
+    
+    year_birth = year - age,
+    year_enter_lbmrkt = pmax(year_birth + 6 + ed, year_birth + 16),
+    cohorte = case_when(
+      year_birth <= 1968 ~ "Baby Boomers",
+      year_birth %in% c(1965:1980) ~ "Gen. X",
+      year_birth >= 1981 ~ "Millenials and Gen. Z",
+    ),
+    # cohorte = case_when(
+    #   year_enter_lbmrkt < 1980 ~ "before_80s",
+    #   year_enter_lbmrkt %in% c(1980:1994) ~ "b_80_94",
+    #   year_enter_lbmrkt %in% c(1995:2006) ~ "b_95_06",
+    #   year_enter_lbmrkt > 2006 ~ "b_95_06",
+    # )
+    ed_factor = case_when(
+      ed %in% c(0) ~ "None",
+      ed %in% c(1,6) ~ "At most primary",
+      ed %in% c(7,12) ~ "At most secondary",
+      ed >= 13 ~ "Some University"
+    ),
+    ed_factor = fct_relevel(
+      ed_factor, "None", "At most primary", "At most secondary", "Some University"
+    )
+
+  ) |> 
+  group_by(country_region) |> 
+  mutate(
+    mestizo_major = (sum(etnia == "Mestiza", na.rm = T) + sum(etnia == "Mulata", na.rm = T))/n(),
+    white_major = (sum(etnia == "White", na.rm = T))/n(),
+    afro_major = (sum(etnia == "Afro", na.rm = T))/n(),
+    indig_major = (sum(etnia == "Indigenous", na.rm = T))/n(),
+    other_major = (sum(etnia == "Other", na.rm = T))/n(),
+    ethnor_major = case_when(
+      mestizo_major >= .5 ~ "Mestizo majority",
+      white_major >= .5 ~ "White majority",
+      afro_major >= .5 ~ "Afro majority",
+      indig_major >= .5 ~ "Indigenous majority",
+      other_major >= .5 ~ "Other majority",
+      TRUE ~ NA_character_
+    )
+  ) |> 
+  ungroup() |> 
+  glimpse()
+
+#
+
+# Summary statistics ----
+
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |>  
+  select(
+    poor, riq1,
+    incomepppd, cluster_id, weight1500b, colorr,
+    sex, age, ed, ocupation, edocivil, localidad, etnia, religion, colori, 
+    # lengua, 
+    gov_transf, # cct, #property_status,
+    tam_hog, colori, mothers_ed,
+    countrycode, year, #intid,
+  ) |>  
+  drop_na()
+
+
+sumstats_table <- 
+  foo|> 
+  group_by(colorr)|> 
+  summarise(
+    n = n(),
+    zero_income = sum(incomepppd == 0, na.rm = T)/n,
+    poor =  sum(poor == 1, na.rm = T)/n,
+    incomepppd_p25 = quantile(incomepppd, .25, na.rm = T),
+    incomepppd_median = median(incomepppd),
+    incomepppd_mean = mean(incomepppd, na.rm = T),
+    incomepppd_p75 = quantile(incomepppd, .75, na.rm = T),
+    incomepppd_max = max(incomepppd, na.rm = T),
+    
+    female = sum(sex == "Female", na.rm = T)/n,
+    age = mean(age, na.rm = T),
+    ed = mean(ed, na.rm = T),
+    tam_hog = mean(tam_hog, na.rm = T),
+    working = sum(ocupation == "Working", na.rm = T)/n,
+    househwork = sum(ocupation == "Taking_care_of_the_home", na.rm = T)/n,
+    # single = sum(edocivil == "Single", na.rm = T)/n,
+    # married = sum(edocivil == "Married", na.rm = T)/n,
+    # remit = sum(remit == 1, na.rm = T)/n,
+    gov_transf = sum(gov_transf == 1, na.rm = T)/n,
+  
+    
+    # Locality size
+    metro_area = sum(localidad == "Metropolitan_area", na.rm = T)/n,
+    city_big = sum(localidad == "City_big", na.rm = T)/n,
+    city_medium = sum(localidad == "City_medium", na.rm = T)/n,
+    city_smal = sum(localidad == "City_small", na.rm = T)/n,
+    rural_area = sum(localidad == "Rural_area", na.rm = T)/n,
+    
+    # Ethnicity
+    # lengua = sum(lengua == 1)/n,
+    white = sum(etnia == "White", na.rm = T)/n,
+    mestizo = sum(etnia == "Mestiza", na.rm = T)/n,
+    mulata = sum(etnia == "Mulata", na.rm = T)/n,
+    indig = sum(etnia == "Indigenous", na.rm = T)/n,
+    afro = sum(etnia == "Afro", na.rm = T)/n,
+    other = sum(etnia == "Other", na.rm = T)/n,
+    
+    moed_none = sum(mothers_ed == "None", na.rm = T)/n,
+    moed_primaryi = sum(mothers_ed == "Primary incomplete", na.rm = T)/n,
+    moed_primaryc = sum(mothers_ed == "Primary complete", na.rm = T)/n,
+    moed_secondaryi = sum(mothers_ed == "Secondary incomplete", na.rm = T)/n,
+    moed_secondaryc = sum(mothers_ed == "Secondary complete", na.rm = T)/n,
+    moed_technici = sum(mothers_ed == "Technical school/Associate degree incomplete", na.rm = T)/n,
+    moed_technicc = sum(mothers_ed == "Technical school/Associate degree complete", na.rm = T)/n,
+    moed_univi = sum(mothers_ed == "University incomplete", na.rm = T)/n,
+    moed_univc = sum(mothers_ed == "University complete", na.rm = T)/n,
+    
+    n = n(),
+  ) |> 
+  mutate_if(
+    is.double,
+    funs(round(., 2))
+  ) |> 
+  mutate(
+    n = as.character(round(n)),
+    hex = perla_palette(11)
+  ) |> 
+  select(-n, hex, everything(), n)
+
+sumstats_table_t <- 
+  sumstats_table |> 
+  mutate(
+    colorr = NULL
+  ) |> 
+  t() 
+
+colnames(sumstats_table_t) <- as.character(seq(1,11))
+
+rownames(sumstats_table_t) <- 
+  c(
+    "1[Income = 0] (%)",
+    "1[Income <= 2.15 ] (%)",
+    "Percentile 25",
+    "Median",
+    "Mean",
+    "Percentile 75",
+    "Max",
+    
+    "1[Female] (%)",
+    "Age",
+    "Years of schooling",
+    "People per household",
+    "1[Working] (%)",
+    "1[Household work] (%)",
+    "1[Gov. transfers] (%)",
+    
+    "1[Metro area] (%)",
+    "1[Big city] (%)",
+    "1[Medium city] (%)",
+    "1[Small city] (%)",
+    "1[Rural area] (%)",
+    
+    "1[White] (%)",
+    "1[Mestiza] (%)",
+    "1[Mulata] (%)",
+    "1[Indigenous] (%)",
+    "1[Afro] (%)",
+    "1[Other] (%)",
+    "1[None] (%)",
+    
+    "1[Primary incomplete] (%)", 
+    "1[Primary complete] (%)",
+    "1[Secondary incomplete] (%)",
+    "1[Secondary complete] (%)", 
+    "1[Technical incomplete] (%)", 
+    "1[Technical complete] (%)", 
+    "1[University incomplete] (%)", 
+    "1[University complete] (%)",
+    
+    "Hexcode",
+    "No. Observations"
+  )
+
+sumstats_table_t |> 
+  kbl(
+    format = "latex", table.envir = "table*",  
+    booktabs = TRUE
+  )
+
+###
+
+# Plots ----
+# Ethnoracial identities 
+lapop %>%
+  filter(!is.na(etnia2)) %>% 
+  mutate(region = str_replace_all(region, "_", " ")) %>% 
+  group_by(etnia2) %>%
+  summarize(n_etnia = n()) %>%
+  mutate(
+    n_total = (lapop %>%
+                 filter(!is.na(etnia2)) %>%
+                 summarize(n = n()))$n
+  ) %>% 
+  mutate(sh_etnia = n_etnia/n_total) %>% 
+  ggplot(aes(etnia2, sh_etnia, color = etnia2)) +
+  geom_col(aes(fill = etnia2), width = .66) +
+  # geom_label(aes(label = scales::percent(sh_etnia, accuracy = .1)), color = "black", size = 3) +
+  scale_fill_viridis(discrete = TRUE, direction = -1) +
+  scale_color_viridis(discrete = TRUE, direction = -1) +
+  scale_y_continuous(breaks = seq(0,.9,.05), labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Ethnoracial identity", y = "Share in population") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "none") 
+
+# Ethnoracial identities and skin tone 
+lapop %>% 
+  filter(!is.na(etnia2)) %>% 
+  filter(!is.na(colorr)) %>% 
+  group_by(etnia2, colorr) %>% 
+  summarize(n = n()) %>% 
+  left_join(lapop %>% 
+              filter(!is.na(etnia2)) %>% 
+              filter(!is.na(colorr)) %>% 
+              group_by(etnia2) %>% 
+              summarize(n_etnia = n())) %>% 
+  mutate(shr = n/n_etnia) %>% 
+  ggplot(aes(etnia2, shr, color = factor(colorr))) + 
+  geom_col(aes(fill = factor(colorr)), position = position_dodge2(width = 0.9, preserve = "single")) +
+  scale_fill_manual(values = perla_palette(n=11)) +
+  scale_color_manual(values = perla_palette(n=11)) +
+  scale_y_continuous(breaks = seq(0,.35,.05), labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Ethnoracial identity", y = "Share of skin tone", fill = "PERLA scale", color = "PERLA scale") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "none")
+
+# Skin tone distribution by country
+lapop %>%   
+  filter(!is.na(colorr)) %>% 
+  mutate(region = str_replace_all(region, "_", " ")) %>% 
+  group_by(countrycode, colorr, region) %>% 
+  summarize(n_color = n()) %>% 
+  left_join(lapop %>% 
+              filter(!is.na(colorr)) %>% 
+              group_by(countrycode) %>% 
+              summarize(n_pais = n())
+  ) %>% 
+  mutate(sh_color = n_color/n_pais,
+         colorr = as.factor(colorr)) %>% 
+  ggplot(aes(countrycode, sh_color, color = colorr)) + 
+  geom_col(aes(fill = colorr), position = position_dodge2(width = 0.9, preserve = "single")) +
+  scale_fill_manual(values = perla_palette(n=11)) +
+  scale_color_manual(values = perla_palette(n=11)) +
+  scale_y_continuous(breaks = seq(0,.4,.05), labels = scales::percent_format()) +
+  labs(x = "", y = "Percentage", fill = "PERLA\nscale", color = "PERLA\nscale") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "none") +
+  #coord_cartesian(ylim = c(0,.3)) +
+  facet_wrap(factor(region) ~., scales = "free",
+             nrow = 3)
+
+# Ethnoracial distribution by country
+lapop %>%
+  filter(!is.na(etnia2)) %>% 
+  mutate(region = str_replace_all(region, "_", " ")) %>% 
+  group_by(countrycode, etnia2, region) %>%
+  summarize(n_etnia = n()) %>%
+  left_join(lapop %>%
+              filter(!is.na(etnia2)) %>% 
+              group_by(countrycode) %>%
+              summarize(n_pais = n())) %>%
+  mutate(sh_etnia = n_etnia/n_pais) %>% 
+  ggplot(aes(countrycode, sh_etnia, color = etnia2)) +
+  geom_col(aes(fill = etnia2), position = position_dodge2(width = 0.9, preserve = "single")) +
+  scale_fill_viridis(discrete = TRUE, direction = -1) +
+  scale_color_viridis(discrete = TRUE, direction = -1) +
+  scale_y_continuous(breaks = seq(0,1,.1), labels = scales::percent_format()) +
+  labs(x = "", y = "Percentage", fill = "Ethno-racial category", color = "Ethno-racial category") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "bottom") + 
+  facet_wrap(factor(region) ~., scales = "free",
+             nrow = 3)
+
+#########################################################
+#### Skin tone penalty (non-parametics correlations) ----
+#########################################################
+# Plots ----
+
+library(binsreg)
+
+foo1 <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+    etnia = case_when(
+      as.character(etnia) == "Mulata" ~ "Mestiza",
+      TRUE ~ as.character(etnia)
+    ),
+    etnia = as.factor(etnia)
+  ) |>
+  select(incomepppd, colorr, colori, countrycode, year, weight1500b, ed, etnia) |> 
+  drop_na() 
+
+
+est1 <- 
+  binsreg(
+    foo1$incomepppd, (foo1$colorr), ~ factor(countrycode) + factor(year), 
+    data = foo1,
+    binsmethod = "rot",
+    nbinsrot = 10,
+    weights = foo1$weight1500b,
+    polyreg = 3,
+    ci = T
+  )
+
+# Extract the plotting information
+result1 <- est1$data.plot$`Group Full Sample`
+
+# Create the figure to plot
+# fig <- 
+ggplot() + 
+  # Add the line
+  geom_line(
+    data=result1$data.poly, aes(x=x, y=fit), size=0.5
+  ) +
+  # Add the CI
+  # geom_ribbon(
+  #   data=result$data.ci,
+  #   aes(x=x, ymin=ci.l, ymax=ci.r),
+  #   alpha=0.1
+  # ) +
+  # Add the dots
+  geom_point(
+    data=tibble(result1$data.dots), 
+    aes(x=x, y=fit, color = factor(x)),
+    size = 3
+  ) +
+  scale_color_manual(values = perla_palette(n = 11)) +
+  scale_x_continuous(breaks = seq(1,11)) +
+  theme(
+    legend.position = "none"
+  ) +
+  labs(
+    y = "Daily income per capita\n(PPP, after country times year FE) ",
+    x = "PERLA Skin tone"
+  ) 
+
+
+est2 <- 
+  binsreg(
+    foo1$incomepppd, foo1$colorr, ~ factor(countrycode) + factor(year), 
+    data = foo1,
+    by = foo1$etnia,
+    weights = foo1$weight1500b,
+    polyreg = 3
+  )
+
+# Extract the plotting information
+data.dots <- 
+  est$data.plot$`Group White`$data.dots |> tibble() |> 
+  bind_rows(
+    est$data.plot$`Group Mestiza`$data.dots |> tibble()
+  ) |> 
+  # bind_rows(
+  #   est$data.plot$`Group Mulata`$data.dots |> tibble()
+  # ) |> 
+  bind_rows(
+    est$data.plot$`Group Afro`$data.dots |> tibble()
+  ) |> 
+  bind_rows(
+    est$data.plot$`Group Indigenous`$data.dots |> tibble()
+  )  |> 
+  bind_rows(
+    est$data.plot$`Group Other`$data.dots |> tibble()
+  ) |> 
+  mutate(
+    group = fct_relevel(group, "White", "Mestiza", "Indigenous", "Afro", "Other")
+  )
+
+data.poly <- 
+  est$data.plot$`Group White`$data.poly |> tibble() |> 
+  bind_rows(
+    est$data.plot$`Group Mestiza`$data.poly |> tibble()
+  ) |> 
+  # bind_rows(
+  #   est$data.plot$`Group Mulata`$data.poly |> tibble()
+  # ) |> 
+  bind_rows(
+    est$data.plot$`Group Afro`$data.poly |> tibble()
+  ) |> 
+  bind_rows(
+    est$data.plot$`Group Indigenous`$data.poly |> tibble()
+  )  |> 
+  bind_rows(
+    est$data.plot$`Group Other`$data.poly |> tibble()
+  ) |> 
+  mutate(
+    group = fct_relevel(group, "White", "Mestiza", "Indigenous", "Afro", "Other")
+  )
+
+# Create the figure to plot
+# # fig <- 
+# ggplot() + 
+#   # Add the line
+#   geom_line(
+#     data= data.poly, aes(x=x, y=fit, color = group), size=0.5
+#   ) +
+#   viridis::scale_color_viridis(discrete = T, direction = -1) +
+#   labs(
+#     y = "Daily income per capita\n(PPP, after country times year FE) ",
+#     x = "PERLA Skin tone",
+#     color = ""
+#   ) +
+#   guides(color = "none") +
+#   ggnewscale::new_scale_color() +
+#   # Add the dots
+#   geom_point(
+#     data= data.dots, 
+#     aes(x=x, y=fit, color = factor(x)),
+#     size = 1.5
+#   ) +
+#   scale_color_manual(values = perla_palette(n = 11)) +
+#   scale_x_continuous(breaks = seq(1,11))  +
+#   guides(color = "none") +
+#   facet_wrap(
+#     ~ group
+#   )
+
+
+ggplot() +
+  # Add the line
+  geom_line(
+    data= data.poly, aes(x=x, y=fit, color = group), size=0.5
+  ) +
+  # Add the dots
+  geom_point(
+    data= data.dots,
+    aes(x=x, y=fit, color = group),
+    size = 1.5
+  ) +
+  viridis::scale_color_viridis(discrete = T, direction = -1) +
+  labs(
+    y = "Daily income per capita\n(PPP, after country times year FE) ",
+    x = "PERLA Skin tone",
+    color = ""
+  ) +
+  guides(shape = "none") +
+  scale_x_continuous(breaks = seq(1,11))
+
+
+ggplot() + 
+  # Add the line
+  geom_line(
+    data= data.poly, aes(x=x, y=fit, color = group), size=0.5
+  ) +
+  viridis::scale_color_viridis(discrete = T, direction = -1) +
+  labs(
+    y = "Daily income per capita\n(PPP, after country times year FE) ",
+    x = "PERLA Skin tone",
+    color = ""
+  ) +
+  ggnewscale::new_scale_color() +
+  # Add the dots
+  geom_point(
+    data= data.dots, 
+    aes(x=x, y=fit, fill = factor(x), color = group), 
+    shape = 21, size = 1.5, stroke = .5
+  ) +
+  scale_fill_manual(values = perla_palette(n = 11)) +
+  viridis::scale_color_viridis(discrete = T, direction = -1) +
+  guides(color = "none", fill = "none") +
+  labs(
+    shape = ""
+  ) +
+  scale_x_continuous(breaks = seq(1,11))
+
+###
+
+
+# Saturated model (Poisson) ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+short <- 
+  fepois((incomepppd) ~ i(colorr), 
+         foo, weights = ~ weight1500b, cluster = ~ cluster_id)
+
+short_tibble <- 
+  broom::tidy(short) %>%
+  select(term, estimate, std.error) %>%
+  filter(str_detect(term, "colorr")) |> 
+  mutate(
+    term = as.numeric(str_remove_all(term, "colorr::")),
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+  ) |>
+  bind_rows(
+    tibble(
+      term = 1,
+      estimate = 0
+    )
+  ) |> 
+  arrange(term)
+
+long <- 
+  fepois(
+    (incomepppd) ~ i(colorr)  +
+      (sex) + i(age) + i(ed) + i(edocivil) + i(ocupation) +  
+      i(localidad) + i(religion) + gov_transf + property_status + mothers_ed
+    | cluster_id^colori,
+    weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori)
+
+
+lct_long <- tibble()
+
+range <- length(as.numeric(levels(factor(foo$colorr)))) - 1
+
+for (i in 1:range) {
+  
+  # print(i)
+  
+  if(i == 1){
+    
+    var2 <- paste0("colorr::", i + 1)
+    
+    p <- 
+      tidy(long) |> 
+      filter(term == var2) |> 
+      select(p.value)
+    
+    p <-  p$p.value
+    
+  }else{
+    
+    var1 <- paste0("colorr::", i)
+    var2 <- paste0("colorr::", i + 1)
+    
+    p <- linear_comb_test(long, var1, var2)
+    
+  }
+  
+  lct_long <- 
+    lct_long |> 
+    bind_rows(
+      tibble(
+        term = var2,
+        lctpval = p
+      )
+    )
+  
+}
+
+long_tibble <- 
+  broom::tidy(long) %>%
+  select(term, estimate, std.error) %>%
+  filter(str_detect(term, "colorr")) |> 
+  left_join(
+    lct_long
+  ) |> 
+  mutate(
+    term = as.numeric(str_remove_all(term, "colorr::")),
+    
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+    
+    lctpval = formatC(lctpval, format="f", digits=3),
+    group1 = term - 1,
+    group2 = term
+  ) |> 
+  bind_rows(
+    tibble(
+      term = 1,
+      estimate = 0
+    )
+  ) |> 
+  arrange(term)
+
+
+long_tibble <- 
+  long_tibble |> 
+  mutate(
+    r2long = long$sq.cor
+  ) |> 
+  left_join(
+    short_tibble |> 
+      mutate(
+        r2short = short$sq.cor,
+        short_est = estimate
+      ) |> 
+      select(term, short_est, r2short) 
+  ) |> 
+  mutate(
+    estimate_adj = beta_adj(delta = 1, estimate, short_est, rmax = .8, r2long, r2short),
+  )
+
+
+
+pvals <- long_tibble$lctpval[2:(range + 1)]
+
+long_tibble |> 
+  ggplot(aes(x = term, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  # geom_point(
+  #   data = long_tibble,
+  #   aes(y = estimate_adj),
+  #   size = 3, shape = 1, stroke = 1.25
+  # ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  scale_y_continuous(
+    # labels = scales::percent,
+    breaks = seq(-1,.2, by = .05)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = max(long_tibble$uci95, na.rm = T) + 0.025, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025
+  )
+
+# Saturated model: Oster (2019) bounds bootstrap ----
+foo <-
+  lapop |>
+  filter(!is.na(incomeppp)) |>
+  filter(!is.na(colorr)) |>
+  filter(!is.na(cluster_id)) |>
+  filter(!is.na(mothers_ed)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+deltas <- 
+  c(0.1, 0.5, 0.75, 0.95, 0.99, 1, 1.01, 1.05, 1.25, 1.5, 2)
+
+rmax <- c(.8, .825, .85, .875, .9, .925, .95)
+
+adjs_nonp_betas <- tibble()
+
+for(i in 1:10000){
+
+  print(i)
+
+  foo1 <- foo |> slice_sample(prop = .75, replace = T)
+
+  short <-
+    fepois((incomepppd) ~ i(colorr),
+           foo1, weights = ~ weight1500b, se = "standard")
+
+  short_tibble <-
+    broom::tidy(short) %>%
+    select(term, estimate) %>%
+    filter(str_detect(term, "colorr")) |>
+    mutate(
+      term = as.numeric(str_remove_all(term, "colorr::")),
+    ) |>
+    arrange(term)
+
+  attr(short_tibble$estimate, "type")  <- NULL
+
+  long <- fepois(
+    incomepppd ~ i(colorr) +
+      i(age) + i(ed) + sex + edocivil + ocupation + localidad
+    + religion + gov_transf + property_status + mothers_ed + etnia
+    | cluster_id^colori
+    , data = foo1,
+    weights = ~ weight1500b,
+    se = "standard"
+    )
+
+  long_tibble <-
+    broom::tidy(long) %>%
+    select(term, estimate) %>%
+    filter(str_detect(term, "colorr")) |>
+    mutate(
+      term = as.numeric(str_remove_all(term, "colorr::")),
+    ) |>
+    arrange(term) |>
+    mutate(
+      r2long = long$sq.cor
+    ) |>
+    left_join(
+      short_tibble |>
+        mutate(
+          r2short = short$sq.cor,
+          short_est = estimate
+        ) |>
+        select(term, short_est, r2short)
+    ) 
+  
+  results <- tibble()
+  
+  for (c in long_tibble$term) {
+    
+    foo1 <- 
+      long_tibble |> 
+      filter(term == c) 
+    
+    for (r in rmax) {
+      
+      results <- 
+        results |>
+        bind_rows(
+          tibble(
+            term = c,
+            delta = deltas,
+            rmax = r
+          ) |> 
+            mutate(
+              est_adj = beta_adj(
+                delta,
+                foo1$estimate,
+                foo1$short_est,
+                rmax = rmax,
+                foo1$r2long,
+                foo1$r2short
+              )
+            )
+        )
+      
+    }
+    
+  }
+
+  adjs_nonp_betas <-
+    adjs_nonp_betas |>
+    bind_rows(
+      results
+    )
+
+}
+
+adjs_nonp_betas |>
+  write_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/adjusted_betas_nonp.csv")
+
+
+adjs_nonp_betas <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/adjusted_betas_nonp.csv")
+
+adjs_nonp_betas |> 
+  filter(term != 1) |> 
+  ggplot(aes(est_adj, fill = factor(term))) +
+  geom_histogram(
+    bins = 100
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = perla_palette(9)[-1]) +
+  guides(fill = F)
+
+
+foo <- 
+adjs_nonp_betas |> 
+  filter(rmax == .8) |> 
+  filter(delta == 1) |> 
+  select(term, est_adj) |> 
+  group_by(term) |> 
+  summarise(
+    estimate = mean(est_adj)
+  ) |> 
+  ungroup() |> 
+  left_join(
+    adjs_nonp_betas |> 
+      filter(rmax == .8) |> 
+      filter(delta == 1) |> 
+      select(term, est_adj) |> 
+      group_by(term) |> 
+      summarise(
+        std.error = sd(est_adj)
+      ) |> 
+      ungroup()
+  ) |> 
+  mutate(
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+  ) 
+  
+foo |> 
+  ggplot(aes(x = term, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3,
+  ) +
+  # geom_point(
+  #   data = long_tibble,
+  #   aes(y = estimate_adj),
+  #   size = 3, shape = 1, stroke = 1.25
+  # ) +
+  scale_color_manual(values = perla_palette(9)) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  scale_y_continuous(
+    # labels = scales::percent,
+    breaks = seq(-1,.1, by = .05)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate", subtitle = "") +
+  theme(legend.position = "none") 
+
+
+#
+# Poisson linear model ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+# Covariates
+covs_names <- 
+  c(
+    "i(age)", "i(ed)", "sex", "edocivil", "ocupation", "localidad", "religion", 
+     "gov_transf","property_status", "mothers_ed", "etnia"
+  )
+
+covs_labels <- 
+  c(
+    "Age", "Years of schooling", "Gender", "Marital status", "Occupational status", 
+    "Locality size", "Religion", "Gov. Transfers", 
+    "Property status", "Mother's education", "Ethnoracial identity"
+  )
+
+fe_labels <- 
+  c(
+    "Geo. strata x Year x Interviewer ID"
+  )
+
+setFixest_fml(
+  ..covs = ~ (age) + (ed) + sex + edocivil + ocupation + localidad 
+  + religion + gov_transf + property_status + mothers_ed + etnia,
+  ..fe = ~ cluster_id^colori
+)
+
+pol1 = list() 
+
+pol1[[1]] = 
+  fepois(
+    incomepppd ~ colorr
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id
+  )
+
+pol1[[2]] = 
+  fepois(
+    incomepppd ~ colorr | countrycode^year
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id
+  )
+
+pol1[[3]] = 
+  fepois(
+    incomepppd ~ colorr | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id
+  )
+
+for(i in 1:length(covs_names)){
+  pol1[[i+3]] = 
+    fepois(
+      xpd(incomepppd ~ colorr + ..covs | ..fe, ..covs = covs_names[1:i])
+      , weights = ~ weight1500b,
+      foo, cluster = ~ cluster_id
+    )
+}
+
+etable(
+  pol1,
+  drop = "!Skin tone",
+  tex = T, tpt = T,
+  title = "Skin tone penalty",
+  digits = 3, digits.stats = 3
+)
+
+summary(foo$incomepppd)
+sd(foo$incomepppd)
+
+# spec_curve(pol1, "colorr", type = "poisson")
+
+# Oster (2019) linear bounds bootstrap ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+deltas <- 
+  c(0.1, 0.5, 0.75, 0.95, 0.99, 1, 1.01, 1.05, 1.25, 1.5, 2)
+
+rmax <- c(.8, .825, .85, .875, .9, .925, .95)
+
+# adjusted_betas <- tibble()
+# 
+# for(i in 1:10000){
+# 
+#   print(i)
+# 
+#   foo1 <- foo |> filter(!is.na(mothers_ed)) |> slice_sample(prop = .8, replace = T)
+# 
+#   short <- fepois(
+#     incomepppd ~ colorr
+#     , data = foo1,
+#     weights = ~ weight1500b,
+#     cluster = ~ cluster_id)
+# 
+#   short_est <-  short$coefficients["colorr"]
+#   r2short <-  short$sq.cor
+# 
+#   long <- fepois(
+#     incomepppd ~ colorr +
+#       i(age) + i(ed) + sex + edocivil + ocupation + localidad
+#     + religion + gov_transf + property_status + mothers_ed + etnia
+#     | cluster_id^colori
+#     , data = foo1,
+#     weights = ~ weight1500b)
+#   
+#   long_est <-  long$coefficients["colorr"]
+#   r2long <-  long$sq.cor
+# 
+#   results <- tibble()
+#   
+#   for (r in rmax) {
+#     
+#     results <- 
+#       results |>
+#       bind_rows(
+#         tibble(
+#           delta = deltas,
+#           rmax = r
+#         ) |> 
+#           mutate(
+#             est_adj = beta_adj(
+#               delta,
+#               long_est,
+#               short_est,
+#               rmax = rmax,
+#               r2long,
+#               r2short
+#             )
+#           )
+#       )
+#     
+#   }
+#   
+#   adjusted_betas <-
+#     adjusted_betas |>
+#     bind_rows(
+#       results
+#     )
+# 
+# }
+# 
+# adjusted_betas |>
+#   write_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/adjusted_betas.csv")
+
+adjusted_betas <- read_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/adjusted_betas.csv")
+
+foo <- 
+adjusted_betas |> 
+  mutate(
+    delta = as.character(delta),
+    rmax = as.character(rmax),
+  ) |> 
+  group_by(delta, rmax) |> 
+  summarise(
+    est_adj = mean(est_adj)
+  ) |> 
+  ungroup() |> 
+  # SD
+  left_join(
+    adjusted_betas |> 
+      mutate(
+        delta = as.character(delta),
+        rmax = as.character(rmax),
+      ) |> 
+      group_by(delta, rmax) |> 
+      summarise(
+        sd = sd(est_adj)
+      ) |> 
+      ungroup() 
+  ) |> 
+  mutate(
+    pval = 2*pt(-abs(est_adj/sd),df=10000-1),
+    pvalc = str_sub(as.character(pval), 0, 5),
+  ) 
+
+foo |> 
+  mutate(
+    est_adjc = str_sub(as.character(est_adj), 0, 6),
+    sdc = str_sub(as.character(sd), 0, 5),
+    label = str_c(est_adjc, "\n", "(", sdc, ")")
+  ) |> 
+  ggplot(
+    aes(delta, rmax, fill = est_adj)
+  ) +
+  geom_tile() +
+  geom_text(
+    aes(label = label),
+    color = "white" #"#440154FF"
+  ) +
+  # scale_fill_gradient(
+  #   low = "white", high = "black",
+  #   breaks= seq(-0.025, 0, .005),
+  #   limits=c(-0.025,0)
+  # )
+  scale_fill_gradientn(
+    colours= rev(viridis(10)),
+    na.value = "transparent",
+    breaks= seq(-0.025, 0, .005),
+    limits=c(-0.025,0)
+  ) +
+  labs(
+    x = "Oster delta",
+    y = "Oster R2 Max",
+    fill = "Adjusted estimate"
+  ) +
+  theme(
+    legend.position = "right"
+  )
+
+# adjusted_betas |> 
+#   summarise_all(mean)
+# 
+# adjusted_betas |> 
+#   summarise_all(sd)
+
+# Adjacent skin tones comparison function ----
+adjacent_comp <- 
+  function(
+    data = lapop,
+    y = "incomepppd",
+    d = "colorr",
+    range = c(1:9),
+    window = c(1:2),
+    covs = covs,
+    fe = "cluster_id",
+    heterogeneity = "complete",
+    weights = "weight1500b",
+    rmax = .8,
+    common_support_plot = F,
+    ri = T,
+    nri = 250
+  ){
+    require(tidyverse)
+    require(fixest)
+    require(progress)
+    setFixest_notes(FALSE)
+    
+    # Complete sample ----
+    if(heterogeneity == "complete"){
+      
+      nonp_results <- tibble()
+      
+      for (c in range) {
+        
+        for (r in window) {
+          
+          wl = c((c+1-r):c)
+          
+          if(wl[1] == 0){
+            wl = c(c)
+          }
+          
+          wr = c((c+1):(c+r))
+          
+          if(wr[length(wr)] == 11){
+            wr = c(c+1)
+          }
+          
+          w = c(wl, wr)
+          print(paste("Sample: ", heterogeneity, "| Window: ", wl[1], "-", wr[length(wr)]))
+          
+          
+          foo_subsample <- 
+            data |>  
+            filter(get(d) %in% w) |>  
+            mutate(
+              darker = if_else(get(d) %in% wr, 1, 0)
+            ) |>
+            select(
+              y, 
+              darker,
+              covs,
+              weights,
+              fe
+            ) |> 
+            drop_na()
+          
+          # Oster (2019) ----
+          
+          short <- 
+            fepois(
+              formula(
+                paste(
+                  y, "~ darker"
+                )
+              ),
+              foo_subsample, 
+              weights = formula(paste("~ ", weights)), 
+              cluster = formula(paste("~ ", fe)),
+              warn = F
+            )
+          
+          coef_short <- short$coefficients["darker"]
+          cor2_short <- short$sq.cor
+          
+          paste(covs,collapse = "+")
+          
+          long <- 
+            fepois(
+              formula(
+                paste(
+                  y, "~ darker +", paste(covs,collapse = "+"), "|", fe
+                )
+              ),
+              foo_subsample, 
+              weights = formula(paste("~ ", weights)), 
+              cluster = formula(paste("~ ", fe)),
+              warn = F
+            )
+          
+          coef_long <- long$coefficients["darker"]
+          cor2_long <- long$sq.cor
+          
+          coef_adj <- beta_adj(1, coef_long, coef_short, max(.8,cor2_long), cor2_long, cor2_short)
+          
+          coef_adj
+          
+          # PSM ----
+          psm1 <- 
+            feglm(
+              formula(
+                paste(
+                  "darker ~ ", paste(covs,collapse = "+")
+                )
+              ),
+              weights = formula(paste("~ ", weights)), 
+              foo_subsample,
+              family = binomial(link = "logit"),
+              warn = F
+            )
+          
+          psm_data <- 
+            foo_subsample |>  
+            # filter(!(cluster_id %in% psm1$fixef_removed$cluster_id)) |>  
+            mutate(
+              pscore = predict(psm1, type = "response"),
+              ipw = darker/pscore + (1-darker)/(1-pscore)
+            )
+          
+          psm_data |>  
+            ggplot(aes(pscore, fill = factor(darker))) +
+            geom_histogram(bins = 200, alpha = .75) +
+            scale_fill_manual(
+              values = 
+                c(
+                  perla_palette(n = 11)[wl[1]],
+                  perla_palette(n = 11)[wr[length(wr)]]
+                )
+            ) +
+            labs(
+              x = "Propensity score",
+              y = "Count",
+              fill = "Darker skin tone",
+              subtitle = str_c("Skin tones between ", wl[1], " and ", wr[length(wr)])
+            )
+          
+          # Common support plot
+          if(common_support_plot == T){
+            
+            ggsave(
+              str_c(
+                "~/Dropbox/Papers/UCR/UCR_01.23/Results/common_support/skin-colors-",
+                heterogeneity, "-",
+                wl[1], "-", wr[length(wr)],
+                ".png"
+              ),
+              width = 7.28, height = 3.28,
+              dpi = 300
+            )
+            
+          }
+          
+          common_support <- 
+            psm_data |>  
+            group_by(darker) |>  
+            summarise(
+              p05_pscore = quantile(pscore, 0.025),
+              p95_pscore = quantile(pscore, 0.975),
+            )
+          
+          psm_data <- 
+            psm_data |>  
+            filter(pscore >= max(common_support$p05_pscore)) |>  
+            filter(pscore <= min(common_support$p95_pscore))
+          
+          
+          ipw <- 
+            fepois(
+              formula(
+                paste(
+                  y, "~ darker |", fe
+                )
+              ),
+              weights = ~ ipw,
+              psm_data, 
+              cluster = formula(paste("~ ", fe)),
+              warn = F
+            )
+          
+          ipw
+          
+          # Randomization inference ----
+          pval <- NULL
+          if(ri == T){
+            
+            prob <- 
+              psm_data |> 
+              group_by(darker) |> 
+              summarise(
+                share = n()/nrow(psm_data)
+              ) |> 
+              filter(darker == 1)
+            
+            prob <- prob$share
+            n <- nrow(psm_data)
+            
+            placebos <- tibble()
+            
+            pb <- progress_bar$new(total = nri)
+            pb$tick(0)
+            Sys.sleep(3)
+            
+            for (i in 1:nri){
+              
+              foo100 <- 
+                psm_data |> 
+                mutate(
+                  placebo = rbinom(n, 1, prob = prob)
+                )
+              
+              ipw_placebo <- 
+                fepois(
+                  formula(
+                    paste(
+                      y, "~ placebo |", fe
+                    )
+                  ),
+                  weights = ~ ipw,
+                  foo100, 
+                  cluster = formula(paste("~ ", fe)),
+                  warn = T
+                )
+              
+              placebos <- 
+                placebos |> 
+                bind_rows(
+                  tibble(
+                    placebo = ipw_placebo$coefficients["placebo"]
+                  )
+                )
+              
+              pb$tick()
+              # Sys.sleep(1 / 100)
+              
+            }
+            
+            pval <- 
+              placebos |> 
+              filter(placebo <= ipw$coefficients["darker"]) 
+            
+            pval <- nrow(pval)/nrow(placebos)
+            
+            pval
+            
+          }
+          
+          # Append results ----
+          
+          nonp_results <- 
+            nonp_results |>  
+            bind_rows(
+              tibble(
+                sample = heterogeneity,
+                c = c,
+                wl = wl[1],
+                wr = wr[length(wr)],
+                range = r,
+                # Long regression
+                coef_long = long$coefficients["darker"],
+                se_long = long$se["darker"],
+                pval_long = long$coeftable[1,4],
+                # Adjusted coefficient
+                coef_adj = coef_adj,
+                # IPW
+                coef_ipw = ipw$coefficients["darker"],
+                se_ipw = ipw$se["darker"],
+                pval_ipw = ipw$coeftable[1,4],
+                ri_pval = pval
+              ) 
+            ) 
+          
+        }
+        
+      }
+      
+      # Return results 
+      return(nonp_results)
+      
+    }
+    
+    # Heterogenous effects ----
+    if(heterogeneity != "complete"){
+      
+      nonp_results <- tibble()
+      
+      levels <- 
+        data |> 
+        select(heterogeneity) |> 
+        mutate(
+          heterogeneity = as.factor(get(heterogeneity))
+        ) 
+      
+      levels <- levels(factor(levels$heterogeneity))
+      
+      for (l in levels) {
+        
+        foo_subsample1 <- 
+          data |> 
+          filter(get(heterogeneity) == l)
+        
+        for (c in range) {
+          
+          for (r in window) {
+            
+            wl = c((c+1-r):c)
+            
+            if(wl[1] == 0){
+              wl = c(c)
+            }
+            
+            wr = c((c+1):(c+r))
+            
+            if(wr[length(wr)] == 11){
+              wr = c(c+1)
+            }
+            
+            w = c(wl, wr)
+            print(paste("Subsample: ", l, "| Window: ", wl[1], "-", wr[length(wr)]))
+            
+            foo_subsample <- 
+              foo_subsample1 |>  
+              filter(get(d) %in% w) |>  
+              mutate(
+                darker = if_else(get(d) %in% wr, 1, 0)
+              ) |>
+              select(
+                y, 
+                darker,
+                covs,
+                weights,
+                fe
+              ) |> 
+              drop_na()
+            
+            if(nrow(foo_subsample)/nrow(foo_subsample1) >= 0.1){
+              
+              # Oster (2019) ----
+              
+              short <- 
+                fepois(
+                  formula(
+                    paste(
+                      y, "~ darker"
+                    )
+                  ),
+                  foo_subsample, 
+                  weights = formula(paste("~ ", weights)), 
+                  cluster = formula(paste("~ ", fe)),
+                  warn = F
+                )
+              
+              coef_short <- short$coefficients["darker"]
+              cor2_short <- short$sq.cor
+              
+              long <- 
+                fepois(
+                  formula(
+                    paste(
+                      y, "~ darker +", paste(covs[ !covs == heterogeneity],collapse = "+"), "|", fe
+                    )
+                  ),
+                  foo_subsample, 
+                  weights = formula(paste("~ ", weights)), 
+                  cluster = formula(paste("~ ", fe)),
+                  warn = F
+                )
+              
+              coef_long <- long$coefficients["darker"]
+              cor2_long <- long$sq.cor
+              
+              coef_adj <- beta_adj(coef_long, coef_short, max(.8,cor2_long), cor2_long, cor2_short)
+              
+              coef_adj
+              
+              # PSM ----
+              psm1 <- 
+                feglm(
+                  formula(
+                    paste(
+                      "darker ~ ", paste(covs[ !covs == heterogeneity],collapse = "+")
+                    )
+                  ),
+                  weights = formula(paste("~ ", weights)), 
+                  foo_subsample,
+                  family = binomial(link = "logit"),
+                  warn = F
+                )
+              
+              psm_data <- 
+                foo_subsample |>  
+                # filter(!(cluster_id %in% psm1$fixef_removed$cluster_id)) |>  
+                mutate(
+                  pscore = predict(psm1, type = "response"),
+                  ipw = darker/pscore + (1-darker)/(1-pscore)
+                )
+              
+              psm_data |>  
+                ggplot(aes(pscore, fill = factor(darker))) +
+                geom_histogram(bins = 200, alpha = .75) +
+                scale_fill_manual(
+                  values = 
+                    c(
+                      perla_palette(n = 11)[wl[1]],
+                      perla_palette(n = 11)[wr[length(wr)]]
+                    )
+                ) +
+                labs(
+                  x = "Propensity score",
+                  y = "Count",
+                  fill = "Darker skin tone",
+                  subtitle = str_c("Skin tones between ", wl[1], " and ", wr[length(wr)])
+                )
+              
+              # Common support plot
+              if(common_support_plot == T){
+                
+                ggsave(
+                  str_c(
+                    "~/Dropbox/Papers/UCR/UCR_01.23/Results/common_support/skin-colors-",
+                    heterogeneity, "-",
+                    wl[1], "-", wr[length(wr)],
+                    ".png"
+                  ),
+                  width = 7.28, height = 3.28,
+                  dpi = 300
+                )
+                
+              }
+              
+              common_support <- 
+                psm_data |>  
+                group_by(darker) |>  
+                summarise(
+                  p05_pscore = quantile(pscore, 0.025),
+                  p95_pscore = quantile(pscore, 0.975),
+                )
+              
+              psm_data <- 
+                psm_data |>  
+                filter(pscore >= max(common_support$p05_pscore)) |>  
+                filter(pscore <= min(common_support$p95_pscore))
+              
+              ipw <- NULL
+              pval <- NULL
+              
+              if(nrow(psm_data)/nrow(foo_subsample) >= .5){
+                
+                ipw <- 
+                  fepois(
+                    formula(
+                      paste(
+                        y, "~ darker |", fe
+                      )
+                    ),
+                    weights = ~ ipw,
+                    psm_data, 
+                    cluster = formula(paste("~ ", fe)),
+                    warn = F
+                  )
+                
+                # Randomization inference ----
+                if(ri == T){
+                  
+                  prob <- 
+                    psm_data |> 
+                    group_by(darker) |> 
+                    summarise(
+                      share = n()/nrow(psm_data)
+                    ) |> 
+                    filter(darker == 1)
+                  
+                  prob <- prob$share
+                  n <- nrow(psm_data)
+                  
+                  placebos <- tibble()
+                  
+                  pb <- progress_bar$new(total = nri)
+                  pb$tick(0)
+                  Sys.sleep(3)
+                  
+                  for (i in 1:nri){
+                    
+                    foo100 <- 
+                      psm_data |> 
+                      mutate(
+                        placebo = rbinom(n, 1, prob = prob)
+                      )
+                    
+                    ipw_placebo <- 
+                      fepois(
+                        formula(
+                          paste(
+                            y, "~ placebo |", fe
+                          )
+                        ),
+                        weights = ~ ipw,
+                        foo100, 
+                        cluster = formula(paste("~ ", fe)),
+                        warn = T
+                      )
+                    
+                    placebos <- 
+                      placebos |> 
+                      bind_rows(
+                        tibble(
+                          placebo = ipw_placebo$coefficients["placebo"]
+                        )
+                      )
+                    
+                    pb$tick()
+                    # Sys.sleep(1 / 100)
+                    
+                  }
+                  
+                  pval <- 
+                    placebos |> 
+                    filter(placebo <= ipw$coefficients["darker"]) 
+                  
+                  pval <- nrow(pval)/nrow(placebos)
+                  
+                  pval
+                  
+                }
+                
+              }
+              
+              # Append results ----
+              
+              nonp_results <- 
+                nonp_results |>  
+                bind_rows(
+                  tibble(
+                    sample = l,
+                    c = c,
+                    wl = wl[1],
+                    wr = wr[length(wr)],
+                    range = r,
+                    # Long regression
+                    coef_long = long$coefficients["darker"],
+                    se_long = long$se["darker"],
+                    pval_long = long$coeftable[1,4],
+                    # Adjusted coefficient
+                    coef_adj = coef_adj,
+                    # IPW
+                    coef_ipw = ipw$coefficients["darker"],
+                    se_ipw = ipw$se["darker"],
+                    pval_ipw = ipw$coeftable[1,4],
+                    ri_pval = pval
+                  ) 
+                ) 
+              
+            }
+            
+          }
+          
+        }
+        
+        
+      }
+      
+      # Return results 
+      return(nonp_results)
+      
+    }
+    
+  }
+
+
+# Comparison between adjacent skin tones ----
+
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+covs = 
+  c("age", "ed", "sex", "etnia", "localidad",
+    "ocupation", "mothers_ed", "religion", "colori", "sexi")
+
+nonp_results <- 
+  adjacent_comp(
+    data = foo,
+    y = "incomepppd",
+    d = "colorr",
+    range = c(1:8),
+    window = c(1),
+    covs = covs,
+    fe = "cluster_id",
+    heterogeneity = "complete",
+    weights = "weight1500b",
+    rmax = .8,
+    common_support_plot = T,
+    ri = F,
+    nri = 1000
+  )
+
+
+nonp_results |> 
+  write_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/non_parametric_ipw.csv")
+
+nonp_results <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/non_parametric_ipw.csv")
+
+
+nonp_results |> 
+  filter(range == 1)
+
+nonp_results |> 
+  filter(range == 2)
+
+### Robustness ----
+# Placebo/falsficiation: resample treatment ----
+foo <- 
+  lapop |> 
+  filter(!is.na(ed)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+n <- nrow(foo)
+
+probs <- 
+  foo |> 
+  group_by(colorr) |> 
+  summarise(
+    share = n()/n
+  ) |> 
+  ungroup()
+
+long <- 
+  fepois(
+    (incomepppd) ~ i(colorr)  +
+      (sex) + i(age) + i(ed) + i(edocivil) + i(ocupation) +  
+      i(localidad) + i(etnia) + i(religion) + gov_transf + property_status + mothers_ed
+    | cluster_id^colori,
+    weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori)
+
+placebos_t <- tibble()
+
+for (i in 1:10000) {
+  
+  print(i)
+  
+  foo1 <- 
+    foo |> 
+    mutate(
+      placebo = sample(1:9, size = n, replace = T, prob = probs$share)
+    )
+  
+  placebo <- 
+    fepois(
+      (incomepppd) ~ i(placebo)  +
+        (sex) + i(age) + i(ed) + i(edocivil) + i(ocupation) +  
+        i(localidad) + i(etnia) + i(religion) + gov_transf + property_status + mothers_ed
+      | cluster_id^colori,
+      weights = ~ weight1500b,
+      foo1, cluster = ~ cluster_id^colori)
+  
+  placebos_t <- 
+    placebos_t |> 
+    bind_rows(
+      tidy(placebo) |> 
+        filter(str_detect(term, "placebo")) |> 
+        select(estimate) |> 
+        t() |> data.frame() |> tibble() |> 
+        janitor::clean_names()
+    )
+  
+}
+
+placebos_t |>
+  write_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/placebos_t.csv")
+
+placebos_t <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/placebos_t.csv")
+
+
+placebos_t |> 
+  select(x4) |> 
+  ggplot(aes(x4)) +
+  geom_histogram() +
+  geom_vline(
+    color = "red",
+    xintercept = (adjs_nonp_betas |>
+                    filter(delta == 1) |> 
+                    filter(rmax == .85) |> 
+                    filter(term == 4) |> 
+                    select(est_adj) |> 
+                    summarise_all(mean))$est_adj
+  )
+
+
+
+# Placebo/falsficiation: resample y ----
+foo <- 
+  lapop |> 
+  filter(!is.na(ed)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+n <- nrow(foo)
+
+probs <- 
+  foo |> 
+  group_by(incomepppd) |> 
+  summarise(
+    share = n()/n
+  ) |> 
+  ungroup()
+
+long <- 
+  fepois(
+    (incomepppd) ~ i(colorr)  +
+      (sex) + i(age) + i(ed) + i(edocivil) + i(ocupation) +  
+      i(localidad) + i(etnia) + i(religion) + gov_transf + property_status + mothers_ed
+    | cluster_id^colori,
+    weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori)
+
+placebos_y <- tibble()
+
+for (i in 1:1000) {
+  
+  print(i)
+  
+  foo1 <- 
+    foo |> 
+    mutate(
+      incomepppd_placebo = sample(probs$incomepppd, size = n, replace = T, prob = probs$share)
+    )
+  
+  placebo <- 
+    fepois(
+      (incomepppd_placebo) ~ i(colorr)  +
+        (sex) + i(age) + i(ed) + i(edocivil) + i(ocupation) +  
+        i(localidad) + i(etnia) + i(religion) + gov_transf + property_status + mothers_ed
+      | cluster_id^colori,
+      weights = ~ weight1500b,
+      foo1, cluster = ~ cluster_id^colori)
+  
+  placebos_y <- 
+    placebos_y |> 
+    bind_rows(
+      tidy(placebo) |> 
+        filter(str_detect(term, "colorr")) |> 
+        select(estimate) |> 
+        t() |> data.frame() |> tibble() |> 
+        janitor::clean_names()
+    )
+  
+}
+
+placebos_y |>
+  write_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/placebos_y.csv")
+
+placebos_y |> 
+  summarise_all(mean)
+
+placebos_y |> 
+  summarise_all(sd)
+
+
+#
+# Household wealth: non-linear model ----
+foo <- 
+  lapop |> 
+  filter(!is.na(riq1)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+short <- 
+  feols((riq1) ~ i(colorr), 
+         foo, weights = ~ weight1500b, cluster = ~ cluster_id)
+
+short_tibble <- 
+  broom::tidy(short) %>%
+  select(term, estimate, std.error) %>%
+  filter(str_detect(term, "colorr")) |> 
+  mutate(
+    term = as.numeric(str_remove_all(term, "colorr::")),
+  ) |>
+  bind_rows(
+    tibble(
+      term = 1,
+      estimate = 0
+    )
+  ) |> 
+  arrange(term)
+
+long <- 
+  feols(
+    (riq1) ~ i(colorr)  +
+      (sex) + (age + age^2) + (ed + ed^2) + i(edocivil) + i(ocupation) +  
+      i(localidad) + i(religion) + gov_transf + property_status + mothers_ed
+    | cluster_id^colori,
+    weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori)
+
+
+lct_long <- tibble()
+
+range <- length(as.numeric(levels(factor(foo$colorr)))) - 1
+
+for (i in 1:range) {
+  
+  # print(i)
+  
+  if(i == 1){
+    
+    var2 <- paste0("colorr::", i + 1)
+    
+    p <- 
+      tidy(long) |> 
+      filter(term == var2) |> 
+      select(p.value)
+    
+    p <-  p$p.value
+    
+  }else{
+    
+    var1 <- paste0("colorr::", i)
+    var2 <- paste0("colorr::", i + 1)
+    
+    p <- linear_comb_test(long, var1, var2)
+    
+  }
+  
+  lct_long <- 
+    lct_long |> 
+    bind_rows(
+      tibble(
+        term = var2,
+        lctpval = p
+      )
+    )
+  
+}
+
+long_tibble <- 
+  broom::tidy(long) %>%
+  select(term, estimate, std.error) %>%
+  filter(str_detect(term, "colorr")) |> 
+  left_join(
+    lct_long
+  ) |> 
+  mutate(
+    term = as.numeric(str_remove_all(term, "colorr::")),
+    
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+    
+    lctpval = formatC(lctpval, format="f", digits=3),
+    group1 = term - 1,
+    group2 = term
+  ) |> 
+  bind_rows(
+    tibble(
+      term = 1,
+      estimate = 0
+    )
+  ) |> 
+  arrange(term)
+
+
+long_tibble <- 
+  long_tibble |> 
+  mutate(
+    r2long = long$sq.cor
+  ) |> 
+  left_join(
+    short_tibble |> 
+      mutate(
+        r2short = short$sq.cor,
+        short_est = estimate
+      ) |> 
+      select(term, short_est, r2short) 
+  ) |> 
+  mutate(
+    estimate_adj = beta_adj(1, estimate, short_est, .8, r2long, r2short),
+  )
+
+
+pvals <- long_tibble$lctpval[2:(range + 1)]
+
+long_tibble |> 
+  ggplot(aes(x = term, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  # geom_point(
+  #   data = long_tibble,
+  #   aes(y = estimate_adj),
+  #   size = 3, shape = 1, stroke = 1.25
+  # ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  scale_y_continuous(
+    # labels = scales::percent,
+    breaks = seq(-1,.2, by = .05)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (z-score)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = max(long_tibble$uci95, na.rm = T) + 0.025, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025
+  )
+
+
+# Different estimators (OLS, SFD, SDD) ----
+# OLS
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+ols1 <- 
+feols(
+  (incomepppd) ~ colorr 
+  , data = foo,
+  weights = ~ weight1500b,
+  cluster = ~ cluster_id
+  )
+
+ols2 <- 
+feols(
+  (incomepppd) ~ colorr +
+    i(age) + i(ed) + sex + edocivil + ocupation + localidad 
+  + religion + gov_transf + property_status + mothers_ed
+  | cluster_id^colori
+  , data = foo,
+  weights = ~ weight1500b,
+  cluster = ~ cluster_id
+  )
+
+lols1 <- 
+  feols(
+    log(incomepppd) ~ colorr 
+    , data = foo,
+    weights = ~ weight1500b,
+    cluster = ~ cluster_id
+  )
+
+lols2 <- 
+  feols(
+    log(incomepppd) ~ colorr +
+      i(age) + i(ed) + sex + edocivil + ocupation + localidad 
+    + religion + gov_transf + property_status + mothers_ed
+    | cluster_id^colori
+    , data = foo,
+    weights = ~ weight1500b,
+    cluster = ~ cluster_id
+  )
+
+# SFD
+foo_sfd <- 
+  foo |> 
+  mutate(
+    lincomepppd = log(incomepppd)
+  ) |> 
+  group_by(cluster_id) |> 
+  arrange(idnum) |> 
+  mutate_at(
+    vars(incomepppd, lincomepppd, colorr),
+    funs(. - dplyr::lag(.))
+  ) |> 
+  ungroup()
+
+sfd1 <- 
+feols(
+  incomepppd ~ colorr
+  , data = foo_sfd,
+  weights = ~ weight1500b,
+  cluster = ~ cluster_id
+)
+
+sfd2 <- 
+feols(
+  incomepppd ~ colorr + 
+    i(age) + i(ed) + sex + edocivil + ocupation + localidad 
+  + religion + gov_transf + property_status + mothers_ed
+  | cluster_id^colori
+  , data = foo_sfd,
+  weights = ~ weight1500b,
+  cluster = ~ cluster_id
+)
+
+lsfd1 <- 
+  feols(
+    lincomepppd ~ colorr
+    , data = foo_sfd,
+    weights = ~ weight1500b,
+    cluster = ~ cluster_id
+  )
+
+lsfd2 <- 
+  feols(
+    lincomepppd ~ colorr + 
+      i(age) + i(ed) + sex + edocivil + ocupation + localidad 
+    + religion + gov_transf + property_status + mothers_ed
+    | cluster_id^colori
+    , data = foo_sfd,
+    weights = ~ weight1500b,
+    cluster = ~ cluster_id
+  )
+
+# SSD
+foo_ssd <- 
+  foo_sfd |> 
+  group_by(cluster_id) |> 
+  arrange(idnum) |> 
+  mutate_at(
+    vars(incomepppd, lincomepppd, colorr),
+    funs(. - dplyr::lag(.))
+  ) |> 
+  ungroup()
+
+ssd1 <- 
+feols(
+  incomepppd ~ colorr
+  , data = foo_ssd,
+  weights = ~ weight1500b,
+  cluster = ~ cluster_id
+)
+
+ssd2 <- 
+feols(
+  incomepppd ~ colorr + 
+    i(age) + i(ed) + sex + edocivil + ocupation + localidad 
+  + religion + gov_transf + property_status + mothers_ed
+  | cluster_id^colori
+  , data = foo_ssd,
+  weights = ~ weight1500b,
+  cluster = ~ cluster_id
+)
+
+lssd1 <- 
+  feols(
+    lincomepppd ~ colorr
+    , data = foo_ssd,
+    weights = ~ weight1500b,
+    cluster = ~ cluster_id
+  )
+
+lssd2 <- 
+  feols(
+    lincomepppd ~ colorr + 
+      i(age) + i(ed) + sex + edocivil + ocupation + localidad 
+    + religion + gov_transf + property_status + mothers_ed
+    | cluster_id^colori
+    , data = foo_ssd,
+    weights = ~ weight1500b,
+    cluster = ~ cluster_id
+  )
+
+etable(
+  ols1, ols2, sfd1, sfd2, ssd1, ssd2,
+  drop = "!Skin tone",
+  tex = T, tpt = T,
+  title = "Skin tone penalty",
+  digits = 3, digits.stats = 3
+)
+
+etable(
+  lols1, lols2, lsfd1, lsfd2, lssd1, lssd2,
+  drop = "!Skin tone",
+  tex = T, tpt = T,
+  title = "Skin tone penalty",
+  digits = 3, digits.stats = 3
+)
+
+# Poisson linear model (labour market) ----
+lapop_workers <- 
+  lapop |> 
+  filter(!is.na(ocupoit))
+
+# Covariates
+covs_names <- 
+  c(
+    "i(age)", "i(ed)", "sex", "edocivil", "ocupation", "localidad", "religion", 
+    "gov_transf", "etnia"
+  )
+
+covs_labels <- 
+  c(
+    "Age", "Years of schooling", "Gender", "Marital status", "Occupational status", 
+    "Locality size", "Religion", "Gov. Transfers", "Ethnoracial identity"
+  )
+
+fe_labels <- 
+  c(
+    "Geo. strata x Year x Interviewer ID", "Ocupation (ILO)"
+  )
+
+setFixest_fml(
+  ..covs = ~ i(age) + i(ed) + (sex) + edocivil + ocupation + localidad 
+  + religion + etnia,
+  ..fe = ~ cluster_id^colori + ocupoit
+  #cluster_id + intid + ocupoit
+)
+
+lbrmrkt = list()
+
+lbrmrkt[[1]] = 
+  fepois(
+    incomepppd ~ colorr
+    , weights = ~ weight1500b,
+    lapop_workers, cluster = ~ cluster_id
+  )
+
+lbrmrkt[[2]] = 
+  fepois(
+    incomepppd ~ colorr | ..fe
+    , weights = ~ weight1500b,
+    lapop_workers, cluster = ~ cluster_id
+  )
+
+for(i in 1:length(covs_names)){
+  lbrmrkt[[i+2]] = 
+    fepois(
+      xpd(incomepppd ~ colorr + ..covs | ..fe, ..covs = covs_names[1:i])
+      , weights = ~ weight1500b,
+      lapop_workers, cluster = ~ cluster_id
+    )
+}
+
+etable(
+  lbrmrkt,
+  drop = "!Skin tone",
+  tex = T, tpt = T,
+  title = "Skin tone penalty",
+  digits = 3, digits.stats = 3
+)
+
+short <- lbrmrkt[[1]]
+long <- lbrmrkt[[length(lbrmrkt)]]
+
+coef_short <- short$coefficients["colorr"]
+r2short <- short$sq.cor
+
+coef_long <- long$coefficients["colorr"]
+r2long <- long$sq.cor
+
+rmax <- .8
+
+estimate_adj <- beta_adj(1, coef_long, coef_short, rmax, r2long, r2short)
+estimate_adj
+
+
+# EMOVI ----
+emovi <- 
+  read_csv("Data/emovi.csv") |> 
+  select(-(id_mun_01001:id_mun_32057)) |> 
+  glimpse() |> 
+  filter(tamhog > 0)
+
+
+
+# sumstats_table <- 
+emovi|> 
+  group_by(perla)|> 
+  summarise(
+    n = n(), # sum(factor, na.rm = T),
+    # na = sum(incomepppd == 0, na.rm = T)/n,
+    # poor =  sum(poor == 1, na.rm = T)/n,
+    # incomepppd_p25 = quantile(incomepppd, .25, na.rm = T),
+    # incomepppd_median = median(incomepppd),
+    income = weighted.mean(ingreso, na.rm = T, factor),
+    riq = weighted.mean(ind_riq, na.rm = T, factor),
+    # incomepppd_p75 = quantile(incomepppd, .75, na.rm = T),
+    # incomepppd_max = max(incomepppd, na.rm = T),
+    
+    female = sum(mujer, na.rm = T)/n,
+    age = weighted.mean(edad, na.rm = T, factor),
+    ed = weighted.mean(escacu, na.rm = T, factor),
+    tam_hog = weighted.mean(tamhog, na.rm = T, factor),
+    indi = sum(indi, na.rm = T)/n,
+    urbano = sum(urbano, na.rm = T)/n,
+    
+    ed_par = weighted.mean(escacu_padres, na.rm = T, factor),
+    riq_par = weighted.mean(ind_riq_pad, na.rm = T, factor),
+    
+    norte = sum(region == 1, na.rm = T)/n,
+    norte_occidente = sum(region == 2, na.rm = T)/n,
+    centro_norte = sum(region == 3, na.rm = T)/n,
+    centro = sum(region == 4, na.rm = T)/n,
+    sur = sum(region == 5, na.rm = T)/n,
+    
+  ) 
+
+emovi <- 
+  emovi |> 
+  mutate(
+    perla = if_else(perla >= 9, 9, perla),
+    lon = longitud,
+    lat = latitud,
+    lincomepc = log(incomepc)
+  )
+
+emovi_sfd <- 
+  emovi |> 
+  group_by(id_mun) |> 
+  arrange(lon, lat) |> 
+  mutate(
+    lincomepc = lincomepc - dplyr::lag(lincomepc),
+    perla = perla - dplyr::lag(perla),
+  ) |> 
+  ungroup()
+
+
+emovi_ssd <- 
+  emovi_sfd |> 
+  group_by(id_mun) |> 
+  arrange(lat, lon) |> 
+  mutate(
+    lincomepc = lincomepc - dplyr::lag(lincomepc),
+    perla = perla - dplyr::lag(perla),
+  ) |> 
+  ungroup()
+
+
+
+ols1 <- 
+  feols(
+    lingreso ~ (perla) 
+    , emovi, weights = ~ factor,
+    cluster = ~ id_mun,
+  )
+
+ols2 <- 
+  feols(
+    lingreso ~ (perla) 
+    + mujer + i(edad) + indi + urbano + i(tamhog) + i(escacu) +
+      + i(escacup) + lon + lat + i(q_riq_pad) + i(q_serv_inf)  
+    | id_mun, emovi, weights = ~ factor,
+    cluster = ~ id_mun,
+  )
+
+ols3 <- 
+  feols(
+    lingreso ~ (perla) 
+    + mujer + i(edad) + indi + urbano + i(tamhog) + i(escacu) +
+      + i(escacup) + lon + lat + i(q_riq_pad) + i(q_serv_inf)  
+    | id_mun + sinco3, emovi, weights = ~ factor,
+    cluster = ~ id_mun + sinco3,
+  )
+
+sfd1 <- 
+  feols(
+    lingreso ~ (perla) 
+    , emovi_sfd, weights = ~ factor,
+    cluster = ~ id_mun,
+  )
+
+sfd2 <- 
+  feols(
+    lingreso ~ (perla) 
+    + mujer + i(edad) + indi + urbano + i(tamhog) + i(escacu) +
+      + i(escacup) + lon + lat + i(q_riq_pad) + i(q_serv_inf)  
+    | id_mun, emovi_sfd, weights = ~ factor,
+    cluster = ~ id_mun,
+  )
+
+sfd3 <- 
+  feols(
+    lingreso ~ (perla) 
+    + mujer + i(edad) + indi + urbano + i(tamhog) + i(escacu) +
+      + i(escacup) + lon + lat + i(q_riq_pad) + i(q_serv_inf)  
+    | id_mun + sinco3, emovi_sfd, weights = ~ factor,
+    cluster = ~ id_mun + sinco3,
+  )
+
+ssd1 <- 
+  feols(
+    lingreso ~ (perla) 
+    , emovi_ssd, weights = ~ factor,
+    cluster = ~ id_mun,
+  )
+
+ssd2 <- 
+  feols(
+    lingreso ~ (perla) 
+    + mujer + i(edad) + indi + urbano + i(tamhog) + i(escacu) +
+      + i(escacup) + lon + lat + i(q_riq_pad) + i(q_serv_inf)  
+    | id_mun, emovi_ssd, weights = ~ factor,
+    cluster = ~ id_mun,
+  )
+
+ssd3 <- 
+  feols(
+    lingreso ~ (perla) 
+    + mujer + i(edad) + indi + urbano + i(tamhog) + i(escacu) +
+      + i(escacup) + lon + lat + i(q_riq_pad) + i(q_serv_inf)  
+    | id_mun + sinco3, emovi_ssd, weights = ~ factor,
+    cluster = ~ id_mun + sinco3,
+  )
+
+
+etable(
+  ols1, ols2, ols3, sfd1, sfd2,  sfd3, ssd1, ssd2, ssd3,
+  drop = "!perla",
+  tex = T, tpt = T,
+  title = " ",
+  digits = 3, digits.stats = 3
+)
+### Heterogenoeus effects ----
+# Parametric Heterogeneous effects ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  filter(!is.na(mothers_ed)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+    mestizo_major_d = if_else(mestizo_major >= .5, "Mestizo majority", "Other")
+  )
+
+het_effect_est <- 
+  function(fixest_multi = fixest_multi, t = "t"){
+    
+    require(fixest)
+    
+    data <- tibble()
+    
+    for (i in 1:length(fixest_multi)) {
+      
+      m <- fixest_multi[[i]]
+      
+      data <- 
+        data |> 
+        bind_rows(
+          tibble(
+            sub_sample = names(fixest_multi)[i],
+            sub_sample_size = m$nobs,
+            coef = m$coefficients[t],
+            se = m$se[t],
+            cor2 = m$sq.cor
+          )
+        )
+      
+    }
+    
+    return(data)
+    
+  }
+
+het_effect_plot <- 
+  function(
+    fixest_multi_long = fixest_multi_long,
+    fixest_multi_short = fixest_multi_short,
+    t = "t",
+    adjusted_bias = T,
+    rmax = .8
+  ){
+    
+    require(fixest)
+    
+    short <- 
+      het_effect_est(fixest_multi_short, "colorr") |> 
+      select(sub_sample, coef, cor2) |> 
+      rename(
+        coef_short = coef,
+        cor2_short = cor2
+      )
+    
+    full <- 
+      het_effect_est(fixest_multi_long, "colorr") |> 
+      mutate(
+        uci95 = coef + 1.96*se,
+        lci95 = coef - 1.96*se,
+        
+        uci90 = coef + 1.64*se,
+        lci90 = coef - 1.64*se,
+      ) |> 
+      left_join(
+        short
+      ) |> 
+      mutate(
+        coef_adj = beta_adj(1, coef, coef_short, rmax, cor2, cor2_short)
+      ) |> 
+      mutate(sub_sample = fct_reorder(sub_sample, coef)) 
+    
+    fulls_coef <- 
+      c(full |> filter(sub_sample == "Full sample"))$coef
+    
+    fulls_coef_adj <- 
+      c(full |> filter(sub_sample == "Full sample"))$coef_adj
+    
+    full <- 
+      full |> 
+      filter(sub_sample != "Full sample")
+    
+    # Plot
+    plot <- 
+      full |> 
+      ggplot(aes(coef, sub_sample)) +
+      geom_vline(xintercept = 0) +
+      # geom_vline(xintercept = fulls_coef, size = 1, alpha = .5, linetype = "dashed") +
+      geom_vline(xintercept = fulls_coef_adj, size = 1, alpha = .5, linetype = "dashed") +
+      geom_linerange(color = "grey", aes(xmin = lci95, xmax = uci95), size=1.75, alpha = .66) +
+      geom_linerange(color = "grey", aes(xmin = lci90, xmax = uci90), size=2.5, alpha = .33) +
+      geom_point(size = 3) +
+      scale_x_continuous(
+        # breaks = seq(-.3,.3, 0.01),
+        # labels = scales::percent
+      ) +
+      labs(x = "Estimate", y = "")
+    
+    if(adjusted_bias == T){
+      
+      plot <- 
+      plot +
+        geom_point(
+          data = full,
+          aes(coef_adj),
+          shape = 1, stroke = 1.25
+        )
+      
+    }
+    
+    return(plot)
+    
+  }
+
+setFixest_fml(
+  ..covs = ~ (age) + (age^2) + (ed) + ed^2 + 
+    sex + edocivil + ocupation + etnia2 + mothers_ed,
+  ..fe = ~ cluster_id^colori
+)
+
+
+# Etnia ----
+het_etnia_short <- 
+  fepois(
+    incomepppd ~ (colorr) 
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ etnia2
+  )
+
+het_etnia <- 
+  fepois(
+    incomepppd ~ (colorr) + ..covs
+    | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ etnia2
+  )
+
+
+het_effect_plot(
+  fixest_multi_long = het_etnia, 
+  fixest_multi_short = het_etnia_short, 
+  t = "colorr", adjusted_bias = F
+)
+
+# Gender ----
+het_gender_short <- 
+  fepois(
+    incomepppd ~ (colorr) 
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ sex
+  )
+
+het_gender <- 
+  fepois(
+    incomepppd ~ (colorr) + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ sex
+  )
+
+het_effect_plot(
+  fixest_multi_long = het_gender, 
+  fixest_multi_short = het_gender_short, 
+  t = "colorr", adjusted_bias = F
+)
+
+# Cohort ----
+het_cohort_short <- 
+  fepois(
+    incomepppd ~ (colorr) 
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ cohorte
+  )
+
+het_cohort <- 
+  fepois(
+    incomepppd ~ (colorr) + i(ed) + 
+      sex + edocivil + ocupation + localidad 
+    + religion + gov_transf + property_status + mothers_ed + etnia
+    | cluster_id^colori
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ cohorte
+  )
+
+
+het_effect_plot(
+  fixest_multi_long = het_cohort, 
+  fixest_multi_short = het_cohort_short, 
+  t = "colorr", adjusted_bias = F
+)
+
+
+# Interviewer Skin Tone ----
+het_interviewer_short <- 
+  fepois(
+    incomepppd ~ (colorr) 
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ colori_fct
+  )
+
+het_interviewer <- 
+  fepois(
+    incomepppd ~ (colorr) + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ colori_fct
+  )
+
+het_effect_plot(
+  fixest_multi_long = het_interviewer, 
+  fixest_multi_short = het_interviewer_short, 
+  t = "colorr", adjusted_bias = F
+)
+
+# Ethnoracial majority ----
+het_ethnor_major_short <- 
+  fepois(
+    incomepppd ~ (colorr) 
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ mestizo_major_d
+  )
+
+het_ethnor_major <- 
+  fepois(
+    incomepppd ~ (colorr) + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo , cluster = ~ cluster_id,
+    fsplit = ~ mestizo_major_d
+  )
+
+
+het_effect_plot(
+  fixest_multi_long = het_ethnor_major, 
+  fixest_multi_short = het_ethnor_major_short, 
+  t = "colorr", adjusted_bias = F
+)
+
+# Country ----
+het_countrycode_short <- 
+  fepois(
+    incomepppd ~ (colorr) 
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ countrycode
+  )
+
+het_countrycode <- 
+  fepois(
+    incomepppd ~ (colorr) + ..covs | ..fe
+    , weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id,
+    fsplit = ~ countrycode
+  )
+
+het_effect_plot(
+  fixest_multi_long = het_countrycode, 
+  fixest_multi_short = het_countrycode_short, 
+  t = "colorr", rmax = .6, adjusted_bias = F
+)
+
+### Mechanisms ----
+# Skin tone discrimination (non-parametric correlations) ----
+
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |>  
+  select(
+    dis_esc_trab,
+    dis_public,
+    dis_gov,
+    incomepppd
+    , cluster_id, weight1500b, colorr,
+    sex, age, ed, ocupation, etnia, religion, colori, 
+    country_region, year,
+  ) |>  
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr)
+  ) |>
+  drop_na()
+
+# Plots
+foo |> 
+  ggplot(aes(colorr, dis_esc_trab)) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 3), 
+    color = "black", alpha = .75,
+    se = F
+  ) +
+  stat_summary_bin(
+    aes(color = factor(colorr)),
+    fun='mean', bins=20, 
+    geom='point', size = 4
+  ) +
+  scale_color_manual(values = perla_palette(n = 11)) +
+  scale_x_continuous(breaks = seq(1,11)) +
+  theme(
+    legend.position = "none"
+  ) +
+  labs(
+    y = "Probability of discrimination",
+    title = "Discrimination: school or work",
+    x = "PERLA Skin tone"
+  )
+
+foo |> 
+  ggplot(aes(colorr, dis_public)) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 3), 
+    color = "black", alpha = .75,
+    se = F
+  ) +
+  stat_summary_bin(
+    aes(color = factor(colorr)),
+    fun='mean', bins=20, 
+    geom='point', size = 4
+  ) +
+  scale_color_manual(values = perla_palette(n = 11)) +
+  scale_x_continuous(breaks = seq(1,11)) +
+  theme(
+    legend.position = "none"
+  ) +
+  labs(
+    y = "Probability of discrimination",
+    title = "Discrimination: public spaces",
+    x = "PERLA Skin tone"
+  )
+
+foo |> 
+  ggplot(aes(colorr, dis_gov)) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 3), 
+    color = "black", alpha = .75,
+    se = F
+  ) +
+  stat_summary_bin(
+    aes(color = factor(colorr)),
+    fun='mean', bins=20, 
+    geom='point', size = 4
+  ) +
+  scale_color_manual(values = perla_palette(n = 11)) +
+  scale_x_continuous(breaks = seq(1,11)) +
+  theme(
+    legend.position = "none"
+  ) +
+  labs(
+    y = "Probability of discrimination",
+    title = "Discrimination: by governmental institutions",
+    x = "PERLA Skin tone"
+  )
+
+###
+
+
+# Labor market stratification ----
+foo <- 
+  lapop |> 
+  filter(!is.na(ocupoit)) |>  
+  filter(!is.na(colorr)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+    ocupoit2 = case_when(
+      ocupoit == "Agricultores__trabajadores_calificados_agropecuarios_forestales__pesqueros" ~ "Agro",
+      ocupoit == "Directores__gerentes" ~ "Directors",
+      ocupoit == "Ocupaciones_elementales" ~ "Elemental ocupations",
+      ocupoit == "Ocupaciones_militares" ~ "Military",
+      ocupoit == "Oficiales_operarios__artesanos_de_artes_mecanicas__de_otros_oficios" ~ "Laborer",
+      ocupoit == "Operadores_de_instalaciones__maquinas__ensambladores" ~ "Laborer",
+      ocupoit == "Personal_de_apoo_administrativo" ~ "Administrative",
+      ocupoit == "Profesionales_cientificos_e_intelectuales" ~ "Scientists",
+      ocupoit == "Tecnicos__profesionales_de_nivel_medio" ~ "Technical and professionals",
+      ocupoit == "Trabajadores_de_los_servicios__vendedores_de_comercios__mercados" ~ "Service and retail",
+    ),
+    ses = case_when(
+      ocupoit2 %in% c("Agro", "Elemental ocupations", "Laborer", "Military") ~ "Low status",
+      ocupoit2 %in% c("Administrative", "Service and retail", "Technical and professionals") ~ "Medium status",
+      ocupoit2 %in% c("Directors", "Scientists") ~ "High status",
+    ),
+    ses = fct_relevel(ses, "High status", "Medium status", "Low status")
+  ) 
+
+foo |> 
+  group_by(ocupoit2, ses, colorr) |> 
+  summarize(n_color = n()) |> 
+  left_join(foo |> 
+              group_by(ocupoit2) |> 
+              summarize(n = n())
+  ) |> 
+  mutate(sh_color = n_color/n,
+         colorr = as.factor(colorr)) |> 
+  ggplot(aes(ocupoit2, sh_color, color = colorr)) + 
+  geom_col(aes(fill = colorr), position = position_dodge2(width = 0.9, preserve = "single")) +
+  scale_fill_manual(values = perla_palette(n=11)) +
+  scale_color_manual(values = perla_palette(n=11)) +
+  scale_y_continuous(breaks = seq(0,.4,.05), labels = scales::percent_format()) +
+  labs(x = "", y = "Percentage", fill = "PERLA\nscale", color = "PERLA\nscale") +
+  theme(axis.text.x = element_text(angle = 0),
+        panel.grid.major.x = element_blank(),
+        legend.position = "none") +
+  facet_wrap(factor(ses) ~., scales = "free",
+             nrow = 3)
+
+
+
+###
+
+
+
+# Education ----
+foo <- 
+  lapop |> 
+  filter(!is.na(incomeppp)) |> 
+  filter(!is.na(colorr)) |> 
+  filter(!is.na(cluster_id)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+  )
+
+long <- 
+  feols(
+    scale(ed) ~ i(colorr)  +
+      (sex) + i(age) + i(edocivil) + i(ocupation) +  
+      i(localidad) + i(religion) + gov_transf + property_status + mothers_ed
+    | cluster_id^colori,
+    weights = ~ weight1500b,
+    foo, cluster = ~ cluster_id^colori)
+
+
+lct_long <- tibble()
+
+range <- length(as.numeric(levels(factor(foo$colorr)))) - 1
+
+for (i in 1:range) {
+  
+  # print(i)
+  
+  if(i == 1){
+    
+    var2 <- paste0("colorr::", i + 1)
+    
+    p <- 
+      tidy(long) |> 
+      filter(term == var2) |> 
+      select(p.value)
+    
+    p <-  p$p.value
+    
+  }else{
+    
+    var1 <- paste0("colorr::", i)
+    var2 <- paste0("colorr::", i + 1)
+    
+    p <- linear_comb_test(long, var1, var2)
+    
+  }
+  
+  lct_long <- 
+    lct_long |> 
+    bind_rows(
+      tibble(
+        term = var2,
+        lctpval = p
+      )
+    )
+  
+}
+
+long_tibble <- 
+  broom::tidy(long) %>%
+  select(term, estimate, std.error) %>%
+  filter(str_detect(term, "colorr")) |> 
+  left_join(
+    lct_long
+  ) |> 
+  mutate(
+    term = as.numeric(str_remove_all(term, "colorr::")),
+    
+    uci95 = estimate + 1.96*std.error,
+    lci95 = estimate - 1.96*std.error,
+    
+    uci90 = estimate + 1.64*std.error,
+    lci90 = estimate - 1.64*std.error,
+    
+    lctpval = formatC(lctpval, format="f", digits=3),
+    group1 = term - 1,
+    group2 = term
+  ) |> 
+  bind_rows(
+    tibble(
+      term = 1,
+      estimate = 0
+    )
+  ) |> 
+  arrange(term)
+
+
+long_tibble <- 
+  long_tibble |> 
+  mutate(
+    r2long = long$sq.cor
+  ) |> 
+  left_join(
+    short_tibble |> 
+      mutate(
+        r2short = short$sq.cor,
+        short_est = estimate
+      ) |> 
+      select(term, short_est, r2short) 
+  ) |> 
+  mutate(
+    estimate_adj = beta_adj(delta = 1, estimate, short_est, rmax = .8, r2long, r2short),
+  )
+
+
+
+pvals <- long_tibble$lctpval[2:(range + 1)]
+
+long_tibble |> 
+  ggplot(aes(x = term, y = estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_errorbar(aes(ymin = lci95, ymax = uci95), lwd = .5, width = .1) +
+  geom_linerange(aes(ymin = lci90, ymax = uci90), lwd = 1) +
+  geom_point(
+    size = 3
+  ) +
+  # geom_point(
+  #   data = long_tibble,
+  #   aes(y = estimate_adj),
+  #   size = 3, shape = 1, stroke = 1.25
+  # ) +
+  scale_color_manual(values = perla_palette(11)) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  scale_y_continuous(
+    # labels = scales::percent,
+    breaks = seq(-1,.2, by = .05)
+  ) +
+  labs(x = "PERLA scale", y = "Estimate (z-scale)", subtitle = "") +
+  theme(legend.position = "none") +
+  ggnewscale::new_scale_color() +
+  geom_signif(
+    annotations = pvals,
+    y_position = max(long_tibble$uci95, na.rm = T) + 0.025, 
+    xmin = seq(1.05, range + .05, by = 1), xmax = seq(1.95, range + .95, by = 1),
+    tip_length = 0,
+    step_increase = -0.025
+  )
+
+##
+# Social mobility ----
+foo <- 
+  lapop |> 
+  filter(!is.na(mothers_ed)) |>  
+  filter(!is.na(colorr)) |> 
+  mutate(
+    colorr = if_else(colorr >= 9, 9, colorr),
+    mothers_ed_c = case_when(
+      mothers_ed == "None" ~ 0,
+      mothers_ed == "Primary complete" ~ 6,
+      mothers_ed == "Primary incomplete" ~ 3,
+      mothers_ed == "Secondary complete" ~ 9,
+      mothers_ed == "Secondary incomplete" ~ 7.5,
+      mothers_ed == "Technical school/Associate degree complete" ~ 12,
+      mothers_ed == "Technical school/Associate degree incomplete" ~ 10.5,
+      mothers_ed == "University complete" ~ 16,
+      mothers_ed == "University incomplete" ~ 14,
+    ),
+    mothers_ed_c_pct = ntile(mothers_ed_c, 100),
+    ed_pct = ntile(ed, 100),
+  ) 
+
+foo |> 
+  ggplot(aes(mothers_ed_c_pct, ed_pct, color = factor(colorr))) +
+  stat_summary_bin(
+    fun='mean', bins=50, 
+    geom='point', size = 1
+  ) +
+  stat_smooth(method = lm, formula = y ~ splines::bs(x, 3), se = F) +
+  scale_color_manual(values = perla_palette(n = 11)) +
+  labs(
+    x = "Mother's education percentile",
+    y = "Child education percentile"
+  ) +
+  guides(color = "none")
+
+
+#########################################################
+#### Skin tone inequality ----
+#########################################################
+# Data ----
+
+lapop_countries <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR_01.23/Data/lapop_countries.csv") |> 
+  mutate(
+    skin_tone_vgt = ntile(skin_tone, 20),
+    skin_tone_tc = case_when(
+      skin_tone >= quantile(skin_tone, .99) ~ quantile(skin_tone, .99),
+      skin_tone <= quantile(skin_tone, .01) ~ quantile(skin_tone, .01),
+      TRUE ~ skin_tone
+    )
+  )
+
+lapop_regions_final <-
+  read_dta("~/Dropbox/Papers/UCR/UCR_01.23/Data/lapop_regions_final.dta") %>% 
+  filter(unbalanced == 0) |> 
+  mutate(
+    skin_tone_vgt = ntile(skin_tone, 20),
+    skin_tone_tc = case_when(
+      skin_tone >= quantile(skin_tone, .99) ~ quantile(skin_tone, .99),
+      skin_tone <= quantile(skin_tone, .01) ~ quantile(skin_tone, .01),
+      TRUE ~ skin_tone
+    )
+  )
+
+lapop_regions_final <- 
+  lapop_regions_final %>% 
+  select(-region) %>% 
+  left_join(
+    lapop_regions_final %>% 
+      group_by(country_region, countrycode, region) %>% 
+      summarise() %>% 
+      ungroup() %>% 
+      filter(!is.na(region))
+  )
+
+
+### Plots -----
+# GDP pc ----
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, log(gdppc))
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "GDP pc (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+# Inequality ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, gini)
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Income Gini",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+# Poverty ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, poverty)
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Poverty at $1.90 a day (2011 PPP) (%)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+# Productivity ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, log(lpxr))
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Labor productivity level (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+# Institutions ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone_tc, v2pepwrsoc)
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Power distributed by social group index",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+# Regions: nightlight density and Skin tone Inequality ----
+
+
+lapop_regions_final %>% 
+  ggplot(
+    aes(skin_tone_tc, log(nlpc))
+  ) +
+  stat_smooth(
+    method = lm, formula = y ~ splines::bs(x, 5), 
+    color = "black", alpha = .5,
+    se = F, lwd = .5
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+    bins = 25,
+    size = 3
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Skin tone Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Nightlight density (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+
+### Maps ----
+sf_use_s2(TRUE)
+lapop_gadm_sf <-
+  st_read("~/Dropbox/Papers/UCR/UCR_01.23/Data/lapop_gadm.shp") %>%
+  st_simplify(preserveTopology = FALSE, dTolerance = 1000) %>%
+  mutate(
+    cntry_r = case_when(
+      cntry_r == "AMJS" ~ "CRI_Amsj",
+      cntry_r == "Urbano Bajura" ~ "CRI_Urb_Bajura",
+      cntry_r == "Rural Bajura" ~ "CRI_Rur_Bajura",
+      cntry_r == "Urbano Central" ~ "CRI_Urb_Central",
+      cntry_r == "Rural Central" ~ "CRI_Rur_Central",
+      TRUE ~ cntry_r
+    ),
+    countrycode = str_sub(cntry_r, 1,3),
+  )
+
+## Skin tone maps ----
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+countries_shp <-
+  ne_countries(scale = "medium", returnclass = "sf") %>%
+  filter(gu_a3 %in% levels(factor(lapop_regions_final$countrycode))) %>%
+  select(gu_a3, geometry)
+
+foo <-
+  lapop_gadm_sf %>%
+  select(cntry_r, geometry) %>%
+  mutate(country_region = cntry_r) %>%
+  left_join(
+    lapop_regions_final
+  ) %>%
+  group_by(country_region) %>%
+  summarise_all(mean) 
+
+# Min skin tone ----
+min_perla <- round(min(foo$color_min, na.rm = T))
+max_perla <- round(max(foo$color_min, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+p1 <-
+  foo %>% 
+  ggplot() + geom_sf(aes(fill = (color_min),
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colours = perla_foo) +
+  theme_void() +
+  labs(fill = "Min.")  +
+  theme(legend.position = "bottom")
+
+# Quartile 25 ----
+min_perla <- round(min(foo$color_q25, na.rm = T))
+max_perla <- round(max(foo$color_q25, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+
+p2 <-
+  foo %>%
+  ggplot() + geom_sf(aes(fill = (color_q25),
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colours = perla_foo) +
+  theme_void() +
+  labs(fill = "Q.25 ")  +
+  theme(legend.position = "bottom")
+
+# Median ----
+min_perla <- round(min(foo$color_median, na.rm = T))
+max_perla <- round(max(foo$color_median, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+
+p3 <-
+  foo %>%
+  ggplot() + geom_sf(aes(fill = (color_median),
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colours = perla_foo) +
+  theme_void() +
+  labs(fill = "Median ")  +
+  theme(legend.position = "bottom")
+
+
+# Mean skin tone ----
+min_perla <- round(min(foo$color_mean, na.rm = T))
+max_perla <- round(max(foo$color_mean, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+p4 <-
+  foo %>% 
+  ggplot() + geom_sf(aes(fill = (color_mean),
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colours = perla_foo) +
+  theme_void() +
+  labs(fill = "Mean")  +
+  theme(legend.position = "bottom")
+
+
+# Quartile 75 ----
+min_perla <- round(min(foo$color_q75, na.rm = T))
+max_perla <- round(max(foo$color_q75, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+p5 <- 
+  foo %>% 
+  ggplot() + geom_sf(aes(fill = color_q75,
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colors = perla_foo) +
+  theme_void() +
+  labs(fill = "Q.75 ")  +
+  theme(legend.position = "bottom")
+
+# Max skin tone ----
+min_perla <- round(min(foo$color_max, na.rm = T))
+max_perla <- round(max(foo$color_max, na.rm = T))
+perla_foo <-  perla_palette(n=11)[c(min_perla:max_perla)]
+
+p6 <- 
+  foo %>% 
+  ggplot() + geom_sf(aes(fill = color_q75,
+  ), lwd = .15, color = "white") +
+  geom_sf(
+    data = countries_shp,
+    alpha = .01, color = "black", lwd = .25
+  ) +
+  scale_fill_gradientn(colors = perla_foo) +
+  theme_void() +
+  labs(fill = "Max. ")  +
+  theme(legend.position = "bottom")
+
+# Plot grid ----
+plot_grid(p1, p2, p3, p4, p5, p6, nrow = 2, ncol = 3)
+
+## Inequality maps ----
+### Metrics -----
+# Setting a dictionary ----
+setFixest_dict(
+  c(
+    # Dependent variable
+    nlpc = "Nightlight density (log)",
+    # Treatment
+    skin_tone_tc = "Skin tone inequality (lagged, z-score)",
+    # Fixed effects
+    year = "Year FE",
+    countrycode = "Country FE",
+    country_region = "Country region FE",
+    country_prov = "State/Province FE",
+    country_mun = "Municipality FE",
+    cluster_id = "Within-municipality strata and year FE",
+    # Covariates
+    sex = "Sex",
+    age = "Age",
+    ed = "Years of schooling",
+    ocupation = "Employment status",
+    localidad = "Locality size",
+    edocivil = "Marital status",
+    religion = "Religion",
+    etnia = "Ethno-racial identity",
+    remit = "Remittances",
+    colori = "Interviewer's skin tone",
+    intid = "Interviewer FE",
+    mothers_ed = "Mother's education",
+    ocupoit = "ILO Occupation"
+  )
+)
+
+
+# Regions: Specifications ----  
+
+foo <- 
+  lapop_regions_final |> 
+  distinct(country_region, year, .keep_all = T) |>
+  panel(~ country_region + year)
+
+gdp0 <- feols(log(nlpc) ~ l(scale(skin_tone_tc)), foo, cluster = ~country_region)
+
+gdp1 <- feols(log(nlpc) ~ l(scale(skin_tone_tc))
+              | countrycode^year, foo, cluster = ~country_region)
+
+gdp2 <- feols(log(nlpc) ~ l(gini)  
+              | countrycode^year, foo, cluster = ~country_region)
+
+# Income Inequality 
+gdp3 <- feols(log(nlpc) ~
+                l(scale(skin_tone_tc)) + l(gini)  
+              | countrycode^year, foo, cluster = ~country_region)
+
+# Inequality shares
+gdp4 <- feols(log(nlpc) ~
+                l(scale(skin_tone_tc)) + l(gini) + l(scale(ethnoracial)) +
+                l(scale(education)) + l(scale(geography)) + l(scale(gender)) + l(scale(cohort)) 
+              | countrycode^year, foo, cluster = ~country_region)
+
+# Geographic characteristics
+gdp5 <- feols(log(nlpc) ~
+                l(scale(skin_tone_tc)) + l(scale(ethnoracial)) + l(gini)  + 
+                l(scale(education)) + l(scale(geography)) + l(scale(gender)) + l(scale(cohort)) +
+                log(area) + lon + lat + (altitude) + (ruggedness) + (temp_av) + (precip_av) + (solarr_av) +
+                border + coastline
+              | countrycode^year, foo, cluster = ~country_region)
+
+# Human capital
+gdp6 <- feols(log(nlpc) ~
+                l(scale(skin_tone_tc)) + l(scale(ethnoracial)) + l(gini)  + 
+                l(scale(education)) + l(scale(geography)) + l(scale(gender)) + l(scale(cohort)) +
+                log(area) + lon + lat + (altitude) + (ruggedness) + (temp_av) + (precip_av) + (solarr_av) +
+                border + coastline +
+                scale(ed_mean) + log(pop) + capital 
+              | countrycode^year, foo, cluster = ~country_region)
+
+# Racial and ethnoracial fraccionalization
+gdp7 <- feols(log(nlpc) ~
+                l(scale(skin_tone_tc)) + l(scale(ethnoracial)) + l(gini)  + 
+                l(scale(education)) + l(scale(geography)) + l(scale(gender)) + l(scale(cohort)) +
+                log(area) + lon + lat + (altitude) + (ruggedness) + (temp_av) + (precip_av) + (solarr_av) +
+                border + coastline +
+                scale(ed_mean) + log(pop) + capital +
+                scale(r_fi) + scale(e_fi) 
+              | countrycode^year, foo, cluster = ~country_region)
+
+
+etable(
+  gdp0, gdp1, gdp2, gdp3, gdp4, gdp5, gdp6, gdp7,
+  # drop = "l(scale(skin_tone_tc),1)",
+  tex = T, tpt = T,
+  title = " ",
+  digits = 3, digits.stats = 3
+)
+
+# Robustness: Oster (2019) ----
+
+foo <- 
+  lapop_regions_final |> 
+  distinct(country_region, year, .keep_all = T) |> 
+  panel(~ country_region + year)
+
+# deltas <- 
+#   c(0.1, 0.5, 0.75, 0.95, 0.99, 1, 1.01, 1.05, 1.25, 1.5, 2)
+# 
+# nboots <- 10000
+# 
+# # Generating a n1 by n_data matrix where each row is an n_data dimensional
+# # Dirichlet draw.
+# weights <- matrix( rexp(nrow(foo) * nboots, 1) , ncol = nrow(foo), byrow = TRUE)
+# weights <- weights / rowSums(weights)
+# 
+# adjusted_betas <- tibble()
+# 
+# for(i in 1:nboots){
+# 
+#   print(i)
+# 
+#   short <- feols(
+#     log(nlpc) ~ l(scale(skin_tone_tc)) , 
+#     data = foo, cluster = ~country_region, 
+#     weights = weights[i,]
+#   )
+# 
+#   short_est <-  short$coefficients["l(scale(skin_tone_tc), 1)"]
+#   r2short <-  short$sq.cor
+# 
+#   long <- feols(
+#     log(nlpc) ~
+#       l(scale(skin_tone_tc)) + l(scale(ethnoracial)) + l(gini)  + 
+#       l(scale(education)) + l(scale(geography)) + l(scale(gender)) + l(scale(cohort)) +
+#       log(area) + lon + lat + (altitude) + (ruggedness) + (temp_av) + (precip_av) + (solarr_av) +
+#       border + coastline +
+#       scale(ed_mean) + log(pop) + capital +
+#       scale(r_fi) + scale(e_fi) 
+#     | countrycode^year, foo, cluster = ~country_region,
+#     weights = weights[i,]
+#   )
+# 
+#   long_est <-  long$coefficients["l(scale(skin_tone_tc), 1)"]
+#   r2long <-  long$sq.cor
+# 
+#   adjusted_betas <-
+#     adjusted_betas |>
+#     rbind(
+#       tibble(
+#         delta = deltas,
+#         rmax = 1
+#       ) |>
+#         mutate(
+#           est_adj = beta_adj(
+#             delta,
+#             long_est,
+#             short_est,
+#             rmax = rmax,
+#             r2long,
+#             r2short
+#           )
+#         )
+#     )
+# 
+# }
+# 
+# adjusted_betas |>
+#   write_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/adjusted_betas_racial_ineq.csv")
+
+adjusted_betas <- read_csv("~/Dropbox/Papers/UCR/UCR_01.23/Results/adjusted_betas_racial_ineq.csv")
+
+foo <- 
+  adjusted_betas |> 
+  mutate(
+    delta = as.character(delta),
+    rmax = as.character(rmax),
+  ) |> 
+  group_by(delta, rmax) |> 
+  summarise(
+    est_adj = mean(est_adj)
+  ) |> 
+  ungroup() |> 
+  # SD
+  left_join(
+    adjusted_betas |> 
+      mutate(
+        delta = as.character(delta),
+        rmax = as.character(rmax),
+      ) |> 
+      group_by(delta, rmax) |> 
+      summarise(
+        sd = sd(est_adj)
+      ) |> 
+      ungroup() 
+  ) |> 
+  mutate(
+    pval = 2*pt(-abs(est_adj/sd),df=10000-1),
+    pvalc = str_sub(as.character(pval), 0, 5),
+  ) 
+
+foo |> 
+  mutate(
+    est_adjc = str_sub(as.character(est_adj), 0, 6),
+    sdc = str_sub(as.character(sd), 0, 5),
+    label = str_c(est_adjc, "\n", "(", sdc, ")")
+  ) |> 
+  ggplot(
+    aes(delta, rmax, fill = est_adj)
+  ) +
+  geom_tile() +
+  geom_text(
+    aes(label = label),
+    color = "white", #"#440154FF",
+    size = 3
+  ) +
+  # scale_fill_gradient(
+  #   low = "white", high = "black",
+  #   breaks= seq(-0.025, 0, .005),
+  #   limits=c(-0.025,0)
+  # )
+  scale_fill_gradientn(
+    colours= rev(viridis(10)),
+    na.value = "transparent",
+    breaks= seq(-0.09, 0, .03),
+    limits=c(-0.1,0)
+  ) +
+  labs(
+    x = "Oster delta",
+    y = "Oster R2 Max",
+    fill = "Adj. estimate"
+  ) +
+  theme(
+    legend.position = "bottom"
+  )
+
+# Robustness: Cinelli and Hazlet (2020) ----
+library(sensemakr)
+
+foo <- 
+  lapop_regions_final |> 
+  distinct(country_region, year, .keep_all = T) |> 
+  panel(~ country_region + year)
+
+m1 <- feols(log(nlpc) ~
+              l(scale(skin_tone_tc)) + l(scale(ethnoracial)) + l(gini)  + 
+              l(scale(education)) + l(scale(geography)) + l(scale(gender)) + l(scale(cohort)) +
+              log(area) + lon + lat + (altitude) + (ruggedness) + (temp_av) + (precip_av) + (solarr_av) +
+              border + coastline +
+              scale(ed_mean) + log(pop) + capital +
+              scale(r_fi) + scale(e_fi) 
+            | countrycode^year, foo, cluster = ~country_region)
+
+sens1 <- 
+  sensemakr(
+    m1,
+    treatment = "l(scale(skin_tone_tc), 1)",
+    benchmark_covariates = "scale(ed_mean)",
+    kd = 1:3
+  )
+
+
+sens2 <- 
+  sensemakr(
+    m1,
+    treatment = "l(scale(skin_tone_tc), 1)",
+    benchmark_covariates = "log(pop)",
+    kd = 1:3
+  )
+
+
+plot(sens1)
+plot(sens2)
+
+# Other Robustness ----
+
+# Actual surveys
+rbst1 <- feols(log(nlpc) ~ 
+                 skin_tone + ethnoracial + gini + 
+                 (education) + (geography) + gender + cohort +
+                 ed_mean + log(pop) + capital +
+                 log(area) + lon + lat + (altitude) + (ruggedness) + (temp_av) + (precip_av) + (solarr_av) +
+                 border + coastline +
+                 r_fi + e_fi 
+               | countrycode^year,
+               foo %>% filter(actual_survey == 1), 
+               cluster = ~country_region)
+
+# Lagged dependent variable
+rbst2 <- feols(log(nlpc) ~
+                 skin_tone_lag + ethnoracial + gini + 
+                 (education) + (geography) + gender + cohort +
+                 ed_mean + log(pop) + capital +
+                 log(area) + lon + lat + (altitude) + (ruggedness) + (temp_av) + (precip_av) + (solarr_av) +
+                 border + coastline +
+                 r_fi + e_fi 
+               | countrycode^year, foo, cluster = ~country_region)
+
+
+# Bellemare et al test ----
+feols(log(nlpc) ~ skin_tone_tc + l(scale(skin_tone_tc))
+      | countrycode^year, foo, cluster = ~country_region + year)
+

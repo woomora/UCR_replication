@@ -1,0 +1,355 @@
+### Workspace -----
+rm(list = ls())
+pacman::p_load(tidyverse, ggpmisc, ggpubr, vdem)
+
+### Country data ----
+# Aggregate inequality measures ----
+
+lapop_countries <- 
+lapop_regions_final %>% 
+  # Remove outlying observations
+  group_by(countrycode) %>% 
+  mutate(
+    skin_tone_out = if_else(
+      skin_tone %in% boxplot.stats(skin_tone)$out,
+      1, 0
+    )
+  ) %>% 
+  ungroup() %>% 
+  filter(skin_tone_out != 1) %>% 
+  # Mean by country
+  group_by(countrycode, region, year) %>% 
+  summarise(
+    gini_lapop = weighted.mean(gini, w = pop,  na.rm = T),
+    theil_lapop = mean(theil, w = pop, na.rm = T),
+    skin_tone = mean(skin_tone, w = pop, na.rm = T),
+    ethnoracial = mean(ethnoracial, w = pop, na.rm = T),
+    education = mean(education, w = pop, na.rm = T),
+    geography = mean(geography, w = pop, na.rm = T),
+    gender = mean(gender, w = pop, na.rm = T),
+    
+  ) %>% 
+  ungroup()
+
+## WB - WDI ----
+# Gini ----
+gini <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR/Data/WDI/gini.csv") %>% 
+  janitor::clean_names() %>% 
+  select(-country_name, -indicator_name, -indicator_code,
+         -(x1960:x2009)) %>% 
+  rename(countrycode = country_code) %>% 
+  filter(countrycode %in% levels(factor(lapop_countries$countrycode))) %>% 
+  pivot_longer(
+    cols = !c(countrycode),
+    names_to = "year",
+    values_to = "gini"
+  ) %>% 
+  mutate(
+    year = as.integer(str_sub(year, start = 2))
+  ) 
+
+# GDP pc ----
+gdppc <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR/Data/WDI/gdppc.csv") %>% 
+  janitor::clean_names() %>% 
+  select(-country_name, -indicator_name, -indicator_code,
+         -(x1960:x2009)) %>% 
+  rename(countrycode = country_code) %>% 
+  filter(countrycode %in% countrycodes$countrycode) %>% 
+  pivot_longer(
+    cols = !c(countrycode),
+    names_to = "year",
+    values_to = "gdppc"
+  ) %>% 
+  mutate(
+    year = as.integer(str_sub(year, start = 2))
+  ) 
+
+# Poverty ----
+poverty <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR/Data/WDI/poverty.csv") %>% 
+  janitor::clean_names() %>% 
+  select(-country_name, -indicator_name, -indicator_code,
+         -(x1960:x2009)) %>% 
+  rename(countrycode = country_code) %>% 
+  filter(countrycode %in% countrycodes$countrycode) %>% 
+  pivot_longer(
+    cols = !c(countrycode),
+    names_to = "year",
+    values_to = "poverty"
+  ) %>% 
+  mutate(
+    year = as.integer(str_sub(year, start = 2))
+  ) 
+
+
+# Population ----
+population <- 
+  read_csv("~/Dropbox/Papers/UCR/UCR/Data/WDI/population.csv") %>% 
+  janitor::clean_names() %>% 
+  select(-country_name, -indicator_name, -indicator_code,
+         -(x1960:x2009)) %>% 
+  rename(countrycode = country_code) %>% 
+  filter(countrycode %in% countrycodes$countrycode) %>% 
+  pivot_longer(
+    cols = !c(countrycode),
+    names_to = "year",
+    values_to = "population"
+  ) %>% 
+  mutate(
+    year = as.integer(str_sub(year, start = 2))
+  ) 
+
+## V-Dem ----
+
+vdem <- tibble(vdemdata::vdem)
+
+vdem <- 
+vdem %>% 
+  rename(countrycode = country_text_id) %>% 
+  filter(countrycode %in% countrycodes$countrycode) %>% 
+  filter(year >= 2010) %>% 
+  select(
+    countrycode,  year, 
+    
+    # Egalitarian democracy index
+    v2x_egaldem,
+    # Social group equality in respect for civil liberties
+    v2clsocgrp,
+    # Power distributed by social group
+    v2pepwrsoc,
+    # Access to state jobs by social group (C) 
+    v2peasjsoc,
+    # Access to state business opportunities by social group
+    v2peasbsoc,
+    # Political parties hate speech,
+    v2smpolhate
+         )
+
+## WB - Global productivity ----
+
+tfp <- 
+  read_dta("~/Dropbox/Papers/UCR/UCR/Data/WDI/WB/Global-Productivity-Aggregate-Database.dta") %>% 
+  select(-ISOcode, -country) %>% 
+  rename(year = time) 
+
+## Join data ----
+lapop_countries <- 
+  lapop_countries %>% 
+  left_join(
+    gini
+  ) %>% 
+  left_join(
+    gdppc
+  ) %>% 
+  left_join(
+    poverty
+  ) %>% 
+  left_join(
+    vdem
+  ) %>% 
+  left_join(
+    tfp
+  ) %>% 
+  left_join(
+    population
+  )
+
+lapop_countries %>% 
+  write_csv("~/Dropbox/Papers/UCR/UCR/Data/lapop_countries.csv")
+
+## Plots ----
+
+# GDP pc (mean) ----
+lapop_countries %>% 
+  group_by(countrycode, region) %>% 
+  summarise_all(mean, na.rm = T) %>% 
+  ggplot(
+    aes(skin_tone, log(gdppc))
+  ) +
+  stat_poly_line() +
+  stat_poly_eq(aes(label = after_stat(eq.label)), label.y = 0.225) +
+  stat_poly_eq(aes(label = after_stat(p.value.label)), label.y = 0.15) +
+  stat_poly_eq(label.y = 0.075) +
+  geom_point(
+    aes(size = population, color = region, shape = region)
+  ) + 
+  viridis::scale_color_viridis(discrete = T) +
+  ggrepel::geom_label_repel(
+    aes(label = countrycode),
+    size = 2
+  ) +
+  labs(
+    x = "Racial Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "GDP pc (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+# GDP pc (stat summary) ----
+
+formula <- y ~ poly(x, 1)
+
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone, log(gdppc))
+    ) +
+  stat_poly_line(formula = formula, se = T) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = after_stat(eq.label)), label.y = 0.2
+  ) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = paste(after_stat(adj.rr.label),
+                      after_stat(n.label), sep = "*\", \"*")),
+    label.y = 0.1
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Racial Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "GDP pc (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+# Poverty ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone, poverty)
+  ) +
+  stat_poly_line(formula = formula, se = T) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = after_stat(eq.label)), label.y = 0.9
+  ) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = paste(after_stat(adj.rr.label),
+                      after_stat(n.label), sep = "*\", \"*")),
+    label.y = 0.8
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Racial Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Poverty at $1.90 a day (2011 PPP) (%)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+# Productivity ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone, log(lpxr))
+  ) +
+  stat_poly_line(formula = formula, se = T) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = after_stat(eq.label)), label.y = 0.2
+  ) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = paste(after_stat(adj.rr.label),
+                          after_stat(n.label), sep = "*\", \"*")),
+    label.y = 0.1
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Racial Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Labor productivity level (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+
+# Institutions ----
+
+lapop_countries %>% 
+  ggplot(
+    aes(skin_tone, v2pepwrsoc)
+  ) +
+  stat_poly_line(formula = formula, se = T) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = after_stat(eq.label)), label.y = 0.2
+  ) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = paste(after_stat(adj.rr.label),
+                      after_stat(n.label), sep = "*\", \"*")),
+    label.y = 0.1
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Racial Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Power distributed by social group index",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 
+
+
+# Regions: nightlight density and racial inequality ----
+
+
+lapop_regions_final %>% 
+  ggplot(
+    aes(skin_tone, log(nlpc))
+  ) +
+  stat_poly_line(formula = formula, se = T) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = after_stat(eq.label)), label.y = 0.2
+  ) +
+  stat_poly_eq(
+    formula = formula,
+    aes(label = paste(after_stat(adj.rr.label),
+                      after_stat(n.label), sep = "*\", \"*")),
+    label.y = 0.1
+  ) +
+  stat_summary_bin(
+    geom = "point",
+    fun = "mean",
+  ) +
+  viridis::scale_color_viridis(discrete = T) +
+  labs(
+    x = "Racial Inequality: \nSkin tone's contribution to income inequality (%)",
+    y = "Nightlight density (log)",
+    color = "",
+    shape = ""
+  ) +
+  theme(legend.position = "bottom") +
+  scale_size(guide = "none") 

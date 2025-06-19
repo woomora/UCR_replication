@@ -1,0 +1,578 @@
+# Workplace ----
+rm(list = ls())
+pacman::p_load(tidyverse, readstata13, ineq, ggrepel, dineq, srvyr)
+setwd("~/Dropbox/Papers/Tesis/Tesis PSE/Datos")
+
+#grDevices::X11(type = "cairo")
+theme_set(theme_classic())
+
+lapop <- 
+  tibble(read.dta13("lapop.dta")) %>% 
+  filter(incomeppp>0) %>% mutate(incomeppp = exp(incomeppp))
+
+# lapop <- 
+# lapop %>% 
+#   anti_join(
+#     lapop %>% 
+#       filter(countrycode == "BRA" & year == 2007)
+#   )
+
+select <- dplyr::select
+nboot <- 100
+
+# Country quantiles and fractionalization within quantiles ----
+quant <- tibble()
+
+for (i in levels(factor(lapop$countrycode))){
+  
+  for(j in as.numeric(levels(factor(lapop$year)))){
+    
+    foo <- 
+      lapop %>% 
+      filter(countrycode == i) %>%
+      filter(year == j) %>% 
+      filter(!is.na(incomeppp))
+    
+    if(nrow(foo) != 0){
+      
+      print(str_c(i,j))
+      
+        foo1 <- 
+          foo %>% 
+          mutate(qtile = statar::xtile(incomeppp, probs = wtb, n = 10)) %>% 
+          group_by(region, countrycode, year, qtile, colorr) %>%
+          summarise(n = n(),
+                    incomeppp = mean(incomeppp, na.rm = TRUE)) %>%
+          mutate(freq = n / sum(n),
+                 colorr = as.factor(colorr),
+                 qtile = as.factor(qtile),
+                 fi = freq - freq^2,
+                 pi = (freq^2)*(1 - freq) ) %>% 
+          ungroup()
+        
+        foo2 <- 
+          foo1 %>% 
+          group_by(region, countrycode, year, qtile) %>% 
+          summarise(n = sum(n), 
+                    fi = sum(fi)*100,
+                    pi = 4*sum(pi)*100,
+                    incomeppp = mean(incomeppp, na.rm = TRUE)
+          ) %>% 
+          ungroup()
+        
+        foo3 <- 
+          foo1 %>% 
+          filter(colorr %in% c(1:3)) %>% 
+          group_by(region, countrycode, year, qtile) %>% 
+          summarise(shr_white = sum(freq)) %>% 
+          ungroup()
+        
+        foo4 <- 
+          foo1 %>% 
+          filter(colorr %in% c(4:8)) %>% 
+          group_by(region, countrycode, year, qtile) %>% 
+          summarise(shr_medium = sum(freq)) %>% 
+          ungroup()
+        
+        foo5 <- 
+          foo1 %>% 
+          filter(colorr %in% c(9:11)) %>% 
+          group_by(region, countrycode, year, qtile) %>% 
+          summarise(shr_dark = sum(freq)) %>% 
+          ungroup()
+        
+        quant <- 
+          quant %>% 
+          bind_rows(
+            foo2 %>% 
+              left_join(foo3) %>% 
+              left_join(foo4) %>% 
+              left_join(foo5)
+          )
+        
+      }
+
+  }
+  
+}
+
+haven::write_dta(quant, "quantiles.dta")
+write_csv(quant, "quantiles.csv")
+
+quant %>% 
+  ggplot(aes(fi, log(1 + incomeppp), color = region)) +
+  geom_point() + geom_smooth(method = "lm", mapping = aes(weight = n))
+
+
+feols(log(incomeppp) ~ fi | countrycode + year, 
+                  quant)
+
+feols(log(incomeppp) ~ shr_medium | qtile + countrycode + year, 
+      quant)
+
+feols(log(incomeppp) ~ shr_m | qtile + countrycode + year, 
+      quant)
+
+# Racial inequality ----
+rcl_ineq <- tibble()
+for (i in levels(factor(lapop$countrycode))){
+  
+  for(j in as.numeric(levels(factor(lapop$year)))){
+    
+    foo <- 
+      lapop %>% 
+      filter(countrycode == i) %>%
+      filter(year == j) %>% 
+      filter(!is.na(incomeppp) & !is.na(wtb))
+    
+    if(nrow(foo) != 0){
+      
+      print(str_c(i,j))
+
+      mld <- mld_decomp(x = foo$incomeppp, z = foo$colorr, weights = foo$wtb)
+      mld_grp <- mld_decomp(x = foo$incomeppp, z = foo$colorr_fct, weights = foo$wtb)
+      
+      foo2 <- 
+        foo %>% 
+        group_by(countrycode, year, region) %>% 
+        summarise(gini = gini.wtd(incomeppp, weights = wtb)*100,
+                  theil = theil.wtd(incomeppp, weights = wtb)*100
+        ) %>% 
+        ungroup() %>% 
+        mutate(r_mld_t = mld$mld_decomp$mld_total*100,
+               r_mld_b = mld$mld_decomp$mld_between*100,
+               r_mld_w = mld$mld_decomp$mld_within*100,
+               r_ratio = (r_mld_b/r_mld_t)*100,
+               
+               r_g_mld_t = mld$mld_decomp$mld_total*100,
+               r_g_mld_b = mld$mld_decomp$mld_between*100,
+               r_g_mld_w = mld$mld_decomp$mld_within*100,
+               r_g_ratio = (r_mld_b/r_mld_t)*100,
+        )
+      
+      rcl_ineq <- 
+        rcl_ineq %>% 
+        bind_rows(
+          foo2
+            )
+      
+    } 
+    
+  }
+  
+}
+
+# Racial segregation ----
+
+rcl_seg <- tibble()
+
+for (i in levels(factor(lapop$countrycode))){
+  
+  for(j in as.numeric(levels(factor(lapop$year)))){
+    
+    foo <- 
+      lapop %>% 
+      filter(countrycode == i) %>%
+      filter(year == j)
+    
+    if(nrow(foo) != 0){
+      
+      print(str_c(i,j))
+        
+        foo1 <- 
+          foo %>% 
+          group_by(countrycode, year, country_region, colorr) %>% 
+          summarise(n = n()) %>%
+          ungroup() %>% 
+          left_join(
+            foo %>% 
+              group_by(countrycode, year, country_region) %>% 
+              summarise(pop_reg = n()) %>%
+              ungroup()
+          ) %>% 
+          left_join(
+            foo %>% 
+              group_by(countrycode, year) %>% 
+              summarise(pop_cnt = n())  %>%
+              ungroup()
+          ) %>% 
+          mutate(share_race = n / pop_reg, 
+                 share_region = pop_reg / pop_cnt,
+                 hi = - share_race*log(share_race)
+          )
+        
+        foo2 <- 
+          foo1 %>% 
+          group_by(countrycode, year) %>% 
+          summarise(h_cnt = sum(hi)) %>% 
+          left_join(
+            foo1 %>% 
+              group_by(countrycode, year, country_region) %>% 
+              summarise(hi = sum(hi*share_region)) %>% 
+              summarise(h_bar = sum(hi))
+          ) %>% 
+          mutate(r_h = (1 - (h_bar/h_cnt))*100) %>% 
+          select(-h_bar, -h_cnt)
+        
+        
+        rcl_seg <- 
+          rcl_seg %>% 
+          bind_rows(
+            foo2
+          )
+      
+      }
+    
+  }
+  
+}
+
+# Racial fractionalization and polarization ----
+rcl_fp <- tibble()
+
+for (i in levels(factor(lapop$countrycode))){
+  
+  for(j in as.numeric(levels(factor(lapop$year)))){
+    
+    foo <- 
+      lapop %>% 
+      filter(countrycode == i) %>%
+      filter(year == j)
+    
+    if(nrow(foo) != 0){
+    
+      print(str_c(i,j))
+      
+        foo1 <- 
+          foo %>% 
+          filter(!is.na(colorr)) %>% 
+          group_by(countrycode, year, colorr) %>% 
+          summarise(n = n()) %>% 
+          mutate(freq = n / sum(n),
+                 fi = freq * (1 - freq),
+                 pi = freq^2 * (1 - freq)
+          ) %>% 
+          group_by(countrycode, year) %>% 
+          summarise(r_fi = sum(fi)*100,
+                    r_pi = (4 * sum(pi))*100
+          )
+        
+        rcl_fp <- 
+          rcl_fp %>% 
+          bind_rows(
+            foo1
+          )
+        
+      }
+  }
+}
+
+# Ethnic inequality ----
+etn_ineq <- tibble()
+for (i in levels(factor(lapop$countrycode))){
+  
+  for(j in as.numeric(levels(factor(lapop$year)))){
+    
+    foo <- 
+      lapop %>% 
+      filter(countrycode == i) %>%
+      filter(year == j)
+    
+    if(nrow(foo) != 0){
+      
+      etnia <- foo_1 %>% select(etnia) %>% summarise(na=sum(is.na(etnia))/n())
+      
+      if(etnia$na < .05) {
+        
+        income <- foo_1 %>% select(incomeppp) %>% summarise(na=sum(is.na(incomeppp))/n())
+        
+        if(income$na < .05){
+          
+          print(str_c(i,j))
+          
+          mld <- mld_decomp(foo$incomeppp, foo$etnia, weights = foo$wtb)
+          
+          foo1 <- 
+            foo %>% 
+            group_by(countrycode, year, region) %>% 
+            summarise() %>% 
+            mutate(e_mld_t = mld$mld_decomp$mld_total*100,
+                   e_mld_b = mld$mld_decomp$mld_between*100,
+                   e_mld_w = mld$mld_decomp$mld_within*100,
+                   e_ratio = (e_mld_b/e_mld_t)*100
+            )
+          
+          etn_ineq <- 
+            etn_ineq %>% 
+            bind_rows(foo1)
+        
+            
+        }
+      
+      }
+      
+    }
+    
+  }
+  
+}
+
+# Ethnic segregation ----
+etn_seg <- tibble()
+for (i in levels(factor(lapop$countrycode))){
+  
+  for(j in as.numeric(levels(factor(lapop$year)))){
+    
+    foo <- 
+      lapop %>% 
+      filter(countrycode == i) %>%
+      filter(year == j)
+    
+    if(nrow(foo) != 0){
+        
+        print(str_c(i,j))
+
+        foo1 <- 
+          foo %>% 
+          group_by(countrycode, year, country_region, etnia) %>% 
+          summarise(n = n()) %>%
+          ungroup() %>% 
+          left_join(
+            foo %>% 
+              group_by(countrycode, year, country_region) %>% 
+              summarise(pop_reg = n()) %>%
+              ungroup()
+            
+          ) %>% 
+          left_join(
+            foo %>% 
+              group_by(countrycode, year) %>% 
+              summarise(pop_cnt = n())  %>%
+              ungroup()
+          ) %>% 
+          mutate(share_race = n / pop_reg, 
+                 share_region = pop_reg / pop_cnt,
+                 hi = - share_race*log(share_race)
+          )
+        
+        foo2 <- 
+          foo1 %>% 
+          group_by(countrycode, year) %>% 
+          summarise(h_cnt = sum(hi)) %>% 
+          left_join(
+            foo1 %>% 
+              group_by(countrycode, year, country_region) %>% 
+              summarise(hi = sum(hi*share_region)) %>% 
+              summarise(h_bar = sum(hi))
+          ) %>% 
+          mutate(e_h = (1 - (h_bar/h_cnt))*100) %>% 
+          select(-h_bar, -h_cnt)
+        
+        etn_seg <- etn_seg %>% bind_rows(foo2)
+      
+    }
+    
+  }
+  
+}
+
+# Ethnic fractionalization and polarization ----
+etn_fp <- tibble()
+for (i in levels(factor(lapop$countrycode))){
+  
+  for(j in as.numeric(levels(factor(lapop$year)))){
+    
+    foo <- 
+      lapop %>% 
+      filter(countrycode == i) %>%
+      filter(year == j)
+    
+    if(nrow(foo) != 0){
+        
+        print(str_c(i,j))
+
+        foo1 <- 
+          foo %>% 
+          filter(!is.na(colorr)) %>% 
+          group_by(countrycode, year, etnia) %>% 
+          summarise(n = n()) %>% 
+          mutate(freq = n / sum(n),
+                 fi = freq * (1 - freq),
+                 pi = freq^2 * (1 - freq)
+          ) %>% 
+          group_by(countrycode, year) %>% 
+          summarise(e_fi = sum(fi)*100,
+                    e_pi = (4 * sum(pi))*100
+          )
+        
+        etn_fp <- etn_fp %>% bind_rows(foo1)
+        
+      }
+  }
+}
+
+# Mestizo and Mulato -----
+mstz <- tibble()
+for (i in levels(factor(lapop$countrycode))){
+  
+  for(j in as.numeric(levels(factor(lapop$year)))){
+    
+    print(str_c(i,j))
+    
+    foo <- 
+      lapop %>% 
+      filter(countrycode == i) %>%
+      filter(year == j)
+    
+    if(nrow(foo) != 0){
+      
+     print(str_c(i,j))
+      
+        foo1 <- 
+          foo %>% 
+          group_by(countrycode, year, etnia) %>% 
+          summarise(n = n()) %>% 
+          mutate(freq = n / sum(n)) %>% 
+          filter(etnia %in% c("Mestiza", "Mulata")) %>% 
+          summarise(freq = sum(freq))
+        
+        
+        mstz <- mstz %>% bind_rows(foo1)
+        
+      }
+  }
+}
+
+
+# V-Dem data ----
+
+devtools::install_github("vdeminstitute/vdemdata")
+
+vdem <- 
+  tibble(vdemdata::vdem) %>% 
+  filter(year >= 2010) %>% 
+  rename(countrycode = country_text_id) %>% 
+  filter(countrycode %in% levels(factor(lapop$countrycode))  
+  ) %>% 
+  select(countrycode, year, v2x_polyarchy, v2x_partipdem, v2x_delibdem, v2x_egaldem)
+
+# WDI ----
+gdp <- 
+  read_csv("~/Dropbox/Data/WDI/gdp_percapita.csv") %>% 
+  pivot_longer(cols = c(`1990`:`2020`),
+               names_to = "year") %>% 
+  mutate(year = as.numeric(year),
+         gdp = value,
+         countrycode = country_code) %>% 
+  select(countrycode, year, gdp) %>% 
+  mutate(gdp = if_else(countrycode == "VEN" & year > 2010, 17527.45, gdp))
+
+
+pop <- read_csv("~/Dropbox/Data/WDI/population.csv") %>% 
+  pivot_longer(cols = c(`1960`:`2020`),
+               names_to = "year") %>% 
+  mutate(year = as.numeric(year),
+         pop = value,
+         countrycode = `Country Code`) %>% 
+  select(countrycode, year, pop) 
+
+gini_wb <-
+read_csv("~/Dropbox/Data/WDI/gini.csv") %>% 
+  pivot_longer(cols = c(`1960`:`2020`),
+               names_to = "year") %>% 
+  mutate(year = as.numeric(year),
+         gini_wb = value,
+         countrycode = country_code) %>% 
+  select(countrycode, year, gini_wb) 
+
+# Ethnic Inequality (Alesina et al 2016) ----
+eijpe <- 
+  tibble(read.dta13("~/Dropbox/Data/Ethnic Inequality (Alesina et al 2016)/EI/JPE_2013-297/EI_final_JPE.dta")) %>% 
+  filter(region == "lac") %>% 
+  select(code, v1_a_lum00pc, grg_a_lum00pc, ethg15_a_lum00pc, ad1_a_lum00pc) %>% 
+  rename(countrycode = code, spatial_ineq = v1_a_lum00pc, 
+         ei_grg = grg_a_lum00pc, ei_eth = ethg15_a_lum00pc,
+         admin_ineq = ad1_a_lum00pc) %>% 
+  mutate_if(is.double, funs(.*100))
+
+# Nunn-Puga ----
+nunn_puga <- 
+  read_csv("/Users/billywoom/Dropbox/Data/Nunn and Puga/rugged_data/rugged_data.csv") %>% 
+  rename(countrycode = isocode) %>% 
+  select(-isonum, -(africa_region_n:africa_region_c), -(dist_slavemkt_atlantic:dist_slavemkt_redsea))
+
+
+# ERI data ----
+# 
+# eri <- 
+# gdp %>% 
+#   left_join(
+#     rcl_ineq %>% 
+#       group_by(countrycode, region) %>% 
+#       summarise()
+#   ) %>% 
+#   filter(countrycode %in% levels(as.factor(rcl_ineq$countrycode))) %>%
+#   filter(year >= 2010) %>% 
+#   left_join(gini_wb) %>% 
+#   left_join(pop) %>% 
+#   left_join(rcl_ineq) %>% 
+#   left_join(rcl_seg) %>% 
+#   left_join(rcl_fp) %>%
+#   left_join(etn_ineq) %>%
+#   left_join(etn_seg) %>% 
+#   left_join(etn_fp) %>%
+#   left_join(mstz) %>%
+#   left_join(rcl_fp_int) %>% 
+#   left_join(vdem) %>% 
+#   left_join(eijpe) %>% 
+#   left_join(nunn_puga ) %>% 
+#   mutate(r_ratio = (r_mld_b/r_mld_t),
+#          e_ratio = (e_mld_b/e_mld_t),
+#          extrapol = as.integer(if_else(is.na(gini), 1, 0))
+#          #extrapol = if_else(is.na(mld_t), 1, 0)
+#   )
+# 
+# eri_ext <- tibble()
+# for (i in levels(as.factor(eri$countrycode))) {
+#   
+#   eri_ext <- 
+#   eri_ext %>% 
+#     bind_rows(
+#       eri %>% 
+#         filter(countrycode == i) %>% 
+#         mutate_if(is.double, funs(zoo::na.spline(., na.rm =FALSE, maxgap = 3))) %>% 
+#         glimpse()
+#     )
+# }
+  
+
+eri <- 
+  rcl_ineq %>% 
+  left_join(rcl_seg) %>% 
+  left_join(rcl_fp) %>%
+  left_join(etn_ineq) %>%
+  left_join(etn_seg) %>% 
+  left_join(etn_fp) %>%
+  left_join(gdp) %>% 
+  left_join(pop) %>% 
+  left_join(gini_wb) %>% 
+  #left_join(gen_ineq) %>%
+  left_join(mstz) %>%
+  left_join(vdem) %>% 
+  left_join(eijpe) %>% 
+  left_join(nunn_puga) %>% 
+  mutate(r_ratio = (r_mld_b/r_mld_t),
+         e_ratio = (e_mld_b/e_mld_t),
+         #extrapol = if_else(is.na(mld_t), 1, 0)
+  )
+  # panelr::panel_data(id = countrycode, wave = year) #%>% 
+  # mutate_at(vars(region, mld_t, mld_b, mld_w, h, rfi, rpi, r), funs(if_else(is.na(.), lag(.), .))) %>% 
+  # mutate_at(vars(region, mld_t, mld_b, mld_w, h, rfi, rpi, r), funs(if_else(is.na(.), lag(.), .))) 
+
+haven::write_dta(eri, "ERI.dta")
+write_csv(eri, "ERI.csv")
+
+# haven::write_dta(eri_ext, "ERI extrapolated.dta")
+# write_csv(eri_ext, "ERI extrapolated.dta.csv")
+
+

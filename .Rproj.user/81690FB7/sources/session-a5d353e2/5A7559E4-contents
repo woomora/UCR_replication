@@ -1,0 +1,417 @@
+### Workplace ----
+rm(list = ls())
+pacman::p_load(tidyverse, rsample, fixest, readstata13,
+               ggridges, viridis, wesanderson, ggrepel,
+               fwildclusterboot, sf, raster,
+               rmapshaper, dineq, lwgeom, haven
+)
+
+select <- dplyr::select
+setwd("~/Dropbox/Papers/UCR")
+
+### Data ----
+
+# Regional data
+eri_regions <- 
+  read_dta("~/Dropbox/Papers/UCR/Datos/eri_regions.dta") %>% 
+  filter(countrycode!="BRB") %>% 
+  mutate(
+    ei_greg_ratio = ei_greg_ratio*100
+  )  %>% 
+  mutate(
+    colonization_t = governor_arrival - expedition_arrival,
+    density14 = log(pop1400/area),
+    density15 = log(pop1500/area),
+    density16 = log(pop1600/area),
+    density17 = log(pop1700/area),
+    density18 = log(pop1800/area),
+    demo_collapse = density15 - density18,
+    
+    afr_flabor_ext = if_else(afr_flabor >= mean(afr_flabor, na.rm = T), 1, 0),
+    ind_flabor_ext = if_else(ind_flabor >= mean(ind_flabor, na.rm = T), 1, 0),
+    
+    ind_afr_flablor = afr_flabor_ext * ind_flabor_ext,
+    
+    no_flabor_ext = if_else(noncflabor >= mean(noncflabor, na.rm = T), 1, 0),
+    hpre_col_hier = if_else(high_pre_col_hier >= mean(high_pre_col_hier, na.rm = T), 1, 0),
+    mpre_col_hier = if_else(medium_pre_col_hier >= mean(medium_pre_col_hier, na.rm = T), 1, 0),
+    lpre_col_hier = if_else(low_pre_col_hier >= mean(low_pre_col_hier, na.rm = T), 1, 0),
+    minerals_ext = if_else(minerals >= mean(minerals, na.rm = T), 1, 0),
+    spain_ext = if_else(spain >= mean(spain, na.rm = T), 1, 0),
+    portugal_ext = if_else(portugal >= mean(portugal, na.rm = T), 1, 0),
+    france_ext = if_else(france >= mean(france, na.rm = T), 1, 0),
+    uk_ext = if_else(uk >= mean(uk, na.rm = T), 1, 0),
+    netherlands_ext = if_else(netherlands >= mean(netherlands, na.rm = T), 1, 0),
+    
+  )
+
+# LAPOP Regional map (based on LAPOP and GADM) 
+sf_use_s2(TRUE) 
+lapop_gadm_sf <- 
+  st_read("~/Dropbox/Papers/UCR/Datos/lapop_gadm.shp") %>% 
+  st_simplify(preserveTopology = FALSE, dTolerance = 1000) %>% 
+  mutate(
+    cntry_r = case_when(
+      cntry_r == "AMJS" ~ "CRI_Amsj",
+      cntry_r == "Urbano Bajura" ~ "CRI_Urb_Bajura",
+      cntry_r == "Rural Bajura" ~ "CRI_Rur_Bajura",
+      cntry_r == "Urbano Central" ~ "CRI_Urb_Central",
+      cntry_r == "Rural Central" ~ "CRI_Rur_Central",
+      TRUE ~ cntry_r
+    ),
+    countrycode = str_sub(cntry_r, 1,3),
+  )
+
+
+### Plots ----
+# Maps ----
+foo <- 
+  lapop_gadm_sf %>% 
+  select(cntry_r, geometry) %>% 
+  mutate(country_region = cntry_r) %>% 
+  left_join(
+    eri_regions 
+  ) 
+
+
+foo %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean) %>% 
+  ggplot() + geom_sf(aes(fill = log(pop)), lwd = .1) +
+  viridis::scale_fill_viridis() 
+
+foo %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean) %>% 
+  ggplot() + geom_sf(aes(fill = log(gdp)), lwd = .1) +
+  viridis::scale_fill_viridis() +
+  labs(fill = "GDP pc (log)") +
+  theme_void()
+
+ggsave("/Users/billywoom/Dropbox/Papers/UCR/plots/regional gdp.png")
+
+foo %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean) %>% 
+  ggplot() + geom_sf(aes(fill = log(nl)), lwd = .1) +
+  viridis::scale_fill_viridis() 
+
+foo %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean) %>% 
+  ggplot() + geom_sf(aes(fill = hdi), lwd = .1) +
+  viridis::scale_fill_viridis()  +
+  labs(fill = "HDI") +
+  theme_void()
+
+foo %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean) %>% 
+  ggplot() + geom_sf(aes(fill = r_ratio), lwd = .1) +
+  viridis::scale_fill_viridis() 
+
+# Scatterplots ----
+# GDP - Racial Inequality
+eri_regions %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean, na.rm = T) %>% 
+  ggplot(aes(#y = log(vnl2pc), 
+             y = log(gdppc), 
+             x = log(r_mld_b),
+             weight = pop
+             )) +
+  geom_point() +
+  labs(x = "MLD Between Racial Groups Component (log)",
+         y = "GDP pc (log)"
+         ) +
+  geom_label_repel(aes(label = countrycode)) +
+  stat_smooth(method = "lm", se = F)
+
+ggsave("/Users/billywoom/Dropbox/Papers/UCR/plots/gdp ri.png")
+
+# HDI - Racial Inequality
+eri_regions %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean, na.rm = T) %>%
+  ggplot(aes(#y = log(vnl2pc), 
+    y = hdi, 
+    x = r_ratio,
+    weight = pop
+  )) +
+  geom_point() +
+  geom_label_repel(aes(label = countrycode)) +
+  stat_smooth(method = "lm", se = F)
+
+# Nightlights - Racial Inequality
+eri_regions %>% 
+  group_by(country_region) %>%
+  summarise_all(mean, na.rm = T) %>%
+  ggplot(aes(#y = log(vnl2pc), 
+    y = log(nlpc), 
+    x = r_ratio,
+    weight = pop
+  )) +
+  geom_point() +
+  geom_label_repel(aes(label = countrycode)) +
+  stat_smooth(method = "lm", se = F)
+
+
+# Nightlights - GDP
+eri_regions %>% 
+  group_by(country_region) %>%
+  summarise_all(mean, na.rm = T) %>%
+  ggplot(aes(#y = log(vnl2pc), 
+    y = log(nlpc), 
+    x = log(gdppc)
+  )) +
+  geom_point() +
+  stat_smooth(method = "lm")
+
+# Nightlights - HDI
+eri_regions %>% 
+  group_by(country_region) %>%
+  summarise_all(mean, na.rm = T) %>%
+  ggplot(aes(#y = log(vnl2pc), 
+    y = log(nlpc), 
+    x = hdi
+  )) +
+  geom_point() +
+  stat_smooth(method = "lm")
+
+
+# Racial inequality and ethnic inequality
+eri_regions %>% 
+  group_by(country_region) %>%
+  summarise_all(mean, na.rm = T) %>%
+  ggplot(aes(#y = log(vnl2pc), 
+    y = mestizo_share, 
+    x = r_mld_b
+  )) +
+  geom_point() +
+  stat_smooth(method = "lm")
+
+### Metrics ----
+
+er_covs <- c("r_fi" , "e_fi" , "e_greg_fi" , "mestizo_share" , "n_ethnic_groups_greg" )
+geo_covs <- c("lon" , "lat" , "altitude" , "ruggedness" , "temp_av" , "precip_av" , "solarr_av", "border", "coastline")
+
+# Income and Educationa Racial Inequality ----
+# Baseline
+gdp1 <- feols(log(gdppc) ~ log(r_mld_b) + log(r_ed_mld_b) + log(mld) + log(e_mld_b)
+              | countrycode + year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Human Capital and agglomerations
+gdp2 <- feols(log(gdppc) ~ log(r_mld_b) + log(r_ed_mld_b) +
+                log(mld)  + log(e_mld_b) + 
+                ed_mean + log(pop/area) + capital + airports 
+              | countrycode + year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Geographic characteristics
+gdp3 <- feols(log(gdppc) ~  
+                log(r_mld_b) + log(r_ed_mld_b) + log(mld)  + log(e_mld_b) + 
+                ed_mean + log(pop/area) + capital + airports + 
+                .[geo_covs]
+              | countrycode + year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Ethno-racial characteristics
+gdp4 <- feols(log(gdppc) ~  
+                log(r_mld_b) + log(r_ed_mld_b) + log(mld)  + log(e_mld_b) + 
+                ed_mean + log(pop/area) + capital + airports + 
+                .[geo_covs] + .[er_covs]  
+              | countrycode + year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# HDI
+hdi1 <- feols(log(hdi) ~ 
+                log(r_mld_b) + log(r_ed_mld_b) + log(mld)  + log(e_mld_b) + 
+                ed_mean + 
+                log(pop/area) + capital + airports + 
+                .[geo_covs] + .[er_covs] 
+              | countrycode + year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# NL
+nl <- feols(log(nl) ~ 
+              log(r_mld_b) + log(r_ed_mld_b) + log(mld)  + log(e_mld_b) + 
+              ed_mean + log(pop/area) + capital + airports + 
+              .[geo_covs] + .[er_covs] 
+            | countrycode + year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Tables
+
+
+modelsummary(
+  list(gdp1,gdp2,gdp3,gdp4, hdi1, nl),
+  output = "latex",
+  stars = stars_sig
+)
+
+
+
+
+
+
+# Income Racial Inequality ----
+gdp1 <- feols(log(gdppc) ~ log(r_mld_b) + log(mld) + log(1 + e_mld_b)
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Human Capital and agglomerations
+gdp2 <- feols(log(gdppc) ~ log(r_mld_b) +
+                log(mld) + log(1 + e_mld_b) +
+                ed_mean + log(pop/area) + capital + airports 
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Geographic characteristics
+gdp3 <- feols(log(gdppc) ~  
+                log(r_mld_b) + log(mld) + log(1 + e_mld_b) +
+                ed_mean + log(pop/area) + capital + airports + 
+                .[geo_covs]
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Ethno-racial characteristics
+gdp4 <- feols(log(gdppc) ~  
+                log(r_mld_b) + log(mld) + log(1 + e_mld_b) +
+                ed_mean + log(pop/area) + capital + airports + 
+                .[geo_covs] + .[er_covs]  
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# HDI
+hdi1 <- feols(log(hdi) ~ 
+                log(r_mld_b) + log(mld) + log(1 + e_mld_b) +
+                ed_mean + 
+                log(pop/area) + capital + airports + 
+                .[geo_covs] + .[er_covs] 
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# NL
+nl <- feols(log(nl) ~ 
+              log(r_mld_b) + log(mld) + log(1 + e_mld_b) +
+              ed_mean + log(pop/area) + capital + airports + 
+              .[geo_covs] + .[er_covs] 
+            | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Tables
+
+
+modelsummary(
+  list(gdp1,gdp2,gdp3,gdp4, hdi1, nl),
+  output = "latex",
+  stars = stars_sig
+)
+
+
+
+# Education Racial Inequality ----
+# Baseline
+gdp1 <- feols(log(gdppc) ~ log(r_ed_mld_b) + log(mld) 
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Human Capital and agglomerations
+gdp2 <- feols(log(gdppc) ~ log(r_ed_mld_b) +
+                log(mld) + 
+                ed_mean + log(pop/area) + capital + airports 
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Geographic characteristics
+gdp3 <- feols(log(gdppc) ~  
+                log(r_ed_mld_b) + log(mld) +
+                ed_mean + log(pop/area) + capital + airports + 
+                .[geo_covs]
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Ethno-racial characteristics
+gdp4 <- feols(log(gdppc) ~  
+                log(r_ed_mld_b) + log(mld) + 
+                ed_mean + log(pop/area) + capital + airports + 
+                .[geo_covs] + .[er_covs]  
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# HDI
+hdi1 <- feols(log(hdi) ~ 
+                log(r_ed_mld_b) + log(mld) + 
+                ed_mean + 
+                log(pop/area) + capital + airports + 
+                .[geo_covs] + .[er_covs] 
+              | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# NL
+nl <- feols(log(nl) ~ 
+              log(r_ed_mld_b) + log(mld) + 
+              ed_mean + log(pop/area) + capital + airports + 
+              .[geo_covs] + .[er_covs] 
+            | countrycode^year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+# Tables
+
+
+modelsummary(
+  list(gdp1,gdp2,gdp3,gdp4, hdi1, nl),
+  output = "latex",
+  stars = stars_sig
+)
+
+## Origins ----
+foo %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean) %>% 
+  ggplot() + geom_sf(aes(fill = ind_flabor), lwd = .1) +
+  viridis::scale_fill_viridis() 
+
+foo %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean) %>% 
+  ggplot() + geom_sf(aes(fill = afr_flabor), lwd = .1) +
+  viridis::scale_fill_viridis() 
+
+eri_regions %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean, na.rm = T) %>% 
+  ggplot(aes(
+    y = log(r_mld_b), 
+    x = log(1 + medium_pre_col_hier)
+  )) +
+  geom_point() +
+  stat_smooth(method = "lm", se = F)
+
+eri_regions <- 
+eri_regions %>% 
+  mutate(
+    ind_flabor_ext = if_else(ind_flabor > 0, 1, 0),
+    afr_flabor_ext = if_else(afr_flabor > 0, 1, 0),
+  )
+
+feols(log(r_mld_b) ~ log(1 + afr_flabor), eri_regions)
+feols(log(r_mld_b) ~ ind_flabor_ext | countrycode + year, eri_regions, cluster = ~country_region)
+feols(log(r_mld_b) ~ log(1 + high_pre_col_hier) + log(1 + medium_pre_col_hier) + log(1 + minerals) | countrycode + year, eri_regions, cluster = ~country_region)
+
+
+feols(log(r_mld_b) ~ 
+        log(1 + ind_flabor) + 
+        log(1 + afr_flabor) +
+        log(pop1500) +
+        # log(mld) + log(e_mld_b) + log(nl) 
+        capital +  border + coastline +
+        log(area) + log(perimeter) + lon + lat +
+        log(altitude) + log(ruggedness) + log(temp_av) + log(precip_av) + log(solarr_av)
+      | countrycode + year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+
+or1 <- feols(log(e_ratio) ~ 
+               capital
+          | countrycode + year, eri_regions, weights = eri_regions$pop, cluster = ~country_region)
+
+
+feols(ei_greg_mld_b ~
+        ind_flabor + log(pop1500) + 
+        lon + lat + log(altitude) + log(slope) + log(temp_av) + log(precip_av) + log(solarr_av) | countrycode + year
+,  eri_regions, cluster = ~country_region)
+
+eri_regions %>% 
+  group_by(country_region) %>% 
+  summarise_all(mean, na.rm = T) %>% 
+  ggplot(aes(
+    y = log(ind_flabor), 
+    x = log(r_mld_b),
+  )) +
+  geom_point() +
+  stat_smooth(method = "lm", se = F)
+
+feols(r_mld_b ~ e_mld_b + ei_greg_mld_b, eri_regions)

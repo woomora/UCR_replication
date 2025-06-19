@@ -1,0 +1,1729 @@
+#### Workspace --------------------------------------------------------
+rm(list = ls())
+pacman::p_load(tidyverse, rsample, fixest, readstata13,
+               ggridges, viridis, wesanderson, ggrepel,
+               fwildclusterboot, sf, raster
+               )
+setwd("~/Dropbox/Papers/UCR")
+# X11(type = "cairo")
+
+theme_set(ggthemes::theme_clean() +
+            theme(legend.position = "bottom",
+                  plot.background=element_blank(),
+                  legend.background = element_rect(color = NA)))
+
+select <- dplyr::select
+
+# Paleta de color PERLA 
+perla_rgb <- col2rgb(c("#fcf2f3", "#f3dfda", "#e7bfb5", "#e4c8a3",
+                       "#bea07e", "#9c7b52", "#83654d", "#6f4f3a",
+                       "#513b2e", "#422811", "#373028"))
+
+perla_palette <- function (n, name = c("perla")) {
+  perla = rgb(perla_rgb[1,], perla_rgb[2,], perla_rgb[3,], maxColorValue = 252)
+  name = match.arg(name)
+  orig = eval(parse(text = name))
+  rgb = t(col2rgb(orig))
+  temp = matrix(NA, ncol = 3, nrow = n)
+  x = seq(0, 1, length(orig))
+  xg = seq(0, 1, n)
+  for (k in 1:3) {
+    hold = spline(x, rgb[, k], n = n)$y
+    hold[hold < 0] = 0
+    hold[hold > 255] = 255
+    temp[, k] = round(hold)
+  }
+  palette = rgb(temp[, 1], temp[, 2], temp[, 3], maxColorValue = 255)
+  palette
+}
+
+# Todos los colores
+perla <- 
+  tibble(perla = c("#fcf2f3", "#f3dfda", "#e7bfb5", "#e4c8a3",
+                   "#bea07e", "#9c7b52", "#83654d", "#6f4f3a",
+                   "#513b2e", "#422811", "#373028")) %>%
+  rename(perla_hex = perla) %>% 
+  mutate(perla = (seq(1,11))) 
+
+perla %>% 
+  ggplot(aes(factor(perla), fill = factor(perla))) + 
+  geom_bar(width = 1.2, height = .75) + scale_fill_manual(values = perla_palette(n=11)) +
+  theme_minimal() +
+  labs(x = "PERLA colour scale", y = "") +
+  theme(legend.position = "none",
+        axis.text.y = element_blank(),
+        panel.grid = element_blank())
+
+#ggsave("paleta perla.png")
+
+#### Data -----------------------------------------------------------
+# LAPOP micro-data 
+lapop <- 
+  tibble(read_rds("~/Dropbox/Papers/UCR/Datos/lapop.Rda")) %>% 
+  filter(!is.na(colorr)) %>% 
+  mutate(colorr2 = colorr^2) %>% 
+  filter(year >= 2012) %>% 
+  filter(!(countrycode == "SLV" & year == 2012)) %>% 
+  mutate(
+    # Haiti
+    country_region = case_when(
+      countrycode == "HTI" & country_region == "HTI_2201" ~ "HTI_Metropolitan_Area",
+      countrycode == "HTI" & country_region == "HTI_2202" ~ "HTI_Northern",
+      countrycode == "HTI" & country_region == "HTI_2203" ~ "HTI_Central",
+      countrycode == "HTI" & country_region == "HTI_2204" ~ "HTI_Rest_of_West",
+      countrycode == "HTI" & country_region == "HTI_2205" ~ "HTI_Southern",
+      TRUE ~ country_region),
+    
+    colorr_clps = if_else(colorr >= 10, 10, colorr),
+    income_not_na = if_else(is.na(incomeppp) | incomeppp == 0, 1, 0),
+    cluster_id = str_c(country_mun, "_", year, "_", cluster)
+  ) %>% 
+  fastDummies::dummy_cols(select_columns = c("colorr", "colorr_clps", "colorr_fct"),
+                          remove_first_dummy = T,
+                          remove_selected_columns = F
+  )
+
+
+
+#### Graphs ------------------------------------------------------------
+lapop_incpos <- 
+  lapop %>% 
+  filter(!is.na(incomeppp)) %>% 
+  filter(!is.na(ed)) %>% 
+  filter(incomeppp > 0) %>% 
+  filter(!is.na(colorr)) %>% 
+  filter(!is.na(country_region))  %>% 
+  filter(!is.na(year)) %>% 
+  filter(!is.na(weight1500b))
+
+# Income gradient ----
+m2 <- (feols(incomeppp ~ colorr_clps, lapop_incpos, weights = lapop_incpos$weight1500b))
+
+fitted_val <- fitted.values(m2)
+
+foo <- 
+  lapop_incpos %>% 
+  bind_cols(
+    fitted = fitted.values(m2)
+  ) %>% 
+  group_by(colorr_clps) %>% 
+  summarise(incomeppp = mean(fitted),
+            pop = sum(weight1500b)
+  ) %>% 
+  ungroup() 
+
+lapop_incpos %>% 
+  group_by(colorr_clps) %>% 
+  summarise(incomeppp = mean(incomeppp),
+            pop = sum(weight1500b)
+  ) %>% 
+  ggplot(aes(colorr_clps, log(incomeppp))) +
+  geom_smooth(method = "lm", se = FALSE, formula = y ~ poly(x, 2, raw=TRUE)) +  
+  geom_point(aes(color = factor(colorr_clps), weight = pop, size = pop)) +
+  theme(legend.position = "none") +
+  scale_color_manual(values = perla_palette(n=9)) +
+  scale_fill_manual(values = perla_palette(n=9)) +
+  guides(size = FALSE) +
+  scale_x_continuous(breaks = seq(1,11))  +
+  labs(x = "Skin tone", y = "Monthly Income per capita (log)") 
+  
+
+ggsave("~/Documents/Tesis/Tesis PSE/R/Document/images/gradient-ingreso.png",
+       #width = 7.72, size = 5.22, units = "in", 
+       dpi = 200)
+
+# Years of schooling gradient ----
+m4 <- (feols(ed ~ colorr | country_region + year, lapop_incpos, weights = lapop_incpos$weight1500b))
+
+fitted_val <- fitted.values(m4)[,1] 
+
+lapop_incpos %>% 
+  ggplot(aes(colorr, fitted_val)) +
+  geom_jitter(aes(color = as.factor(colorr)), alpha=.3, width = .5, height = .5) +
+  geom_smooth(method = "lm", se = FALSE) +  
+  scale_color_manual(values = perla_palette(n=11)) +
+  scale_fill_manual(values = perla_palette(n=11)) +
+  guides(size = FALSE) +
+  scale_x_continuous(breaks = seq(1,11))  +
+  scale_y_continuous(breaks = seq(1,18, 2))  +
+  labs(x = "Skin tone", y = "Years of schooling") +
+  theme(legend.position = "none") 
+
+ggsave("~/Documents/Tesis/Tesis PSE/R/Document/images/gradient-escolaridad.png",
+       #width = 7.72, size = 5.22, units = "in", 
+       dpi = 200)
+
+# Income and years of schooling ----
+lapop_incpos <- 
+  lapop %>% 
+  filter(!is.na(incomeppp)) %>% 
+  filter(!is.na(ed)) %>% 
+  filter(incomeppp > 0) %>% 
+  filter(!is.na(colorr)) %>% 
+  filter(!is.na(country_region))  %>% 
+  filter(!is.na(year)) %>% 
+  filter(!is.na(weight1500b))
+
+lapop_incpos %>% 
+  ggplot(aes(ed, incomeppp, weight = weight1500b)) + 
+  geom_jitter(alpha=.1, width = .5, height = .5) +
+  geom_smooth(method = "lm", alpha = .1, se = FALSE) +
+  scale_x_continuous(breaks = seq(1,18, 2))  +
+  labs(x = "Years of Schooling", y = "Monthly Income per capita (log)")
+
+
+ggsave("~/Documents/Tesis/Tesis PSE/R/Document/images/ingreso-escolaridad.png",
+       #width = 7.72, size = 5.22, units = "in", 
+       dpi = 200)
+
+# Income gradient by country ----
+lapop_incpos <- 
+  lapop %>% 
+  filter(region != "South_America") %>% 
+  filter(!is.na(incomeppp)) %>% 
+  filter(!is.na(ed)) %>% 
+  filter(incomeppp > 0) %>% 
+  filter(!is.na(colorr)) %>% 
+  filter(!is.na(country_region))  %>% 
+  filter(!is.na(year)) %>% 
+  filter(!is.na(weight1500b))
+
+m2 <- (feols(incomeppp ~ colorr | country_region + year, lapop_incpos, weights = lapop_incpos$weight1500b))
+
+fitted_val <- fitted.values(m2)[,1]
+
+lapop_incpos %>% 
+  ggplot(aes(colorr, fitted_val)) +
+  geom_jitter(aes(color = as.factor(colorr)), alpha=.2, width = .5, height = .5) +
+  geom_smooth(method = "lm", se = T) +  
+  scale_color_manual(values = perla_palette(n=11)) +
+  scale_fill_manual(values = perla_palette(n=11)) +
+  guides(size = FALSE) +
+  scale_x_continuous(breaks = seq(1,11))  +
+  scale_y_continuous(breaks = seq(2,8,1))  +
+  labs(x = "Skin tone", y = "Monthly Income per capita (log)") +
+  theme(legend.position = "none")+
+  facet_wrap(~countrycode)
+
+
+ggsave("~/Documents/Tesis/Tesis PSE/R/Document/images/gradient-ingreso-country1.png",
+       #width = 7.72, size = 5.22, units = "in", 
+       dpi = 200)
+
+lapop_incpos <- 
+  lapop %>% 
+  filter(region == "South_America") %>% 
+  filter(!is.na(incomeppp)) %>% 
+  filter(!is.na(ed)) %>% 
+  filter(incomeppp > 0) %>% 
+  filter(!is.na(colorr)) %>% 
+  filter(!is.na(country_region))  %>% 
+  filter(!is.na(year)) %>% 
+  filter(!is.na(weight1500b))
+
+m2 <- (feols(incomeppp ~ colorr | country_region + year, lapop_incpos, weights = lapop_incpos$weight1500b))
+
+fitted_val <- fitted.values(m2)[,1]
+
+lapop_incpos %>% 
+  ggplot(aes(colorr, fitted_val)) +
+  geom_jitter(aes(color = as.factor(colorr)), alpha=.2, width = .5, height = .5) +
+  geom_smooth(method = "lm", se = T) +  
+  scale_color_manual(values = perla_palette(n=11)) +
+  scale_fill_manual(values = perla_palette(n=11)) +
+  guides(size = FALSE) +
+  scale_x_continuous(breaks = seq(1,11))  +
+  scale_y_continuous(breaks = seq(2,8,1))  +
+  labs(x = "Skin tone", y = "Monthly Income per capita (log)") +
+  theme(legend.position = "none")+
+  facet_wrap(~countrycode)
+
+
+ggsave("~/Documents/Tesis/Tesis PSE/R/Document/images/gradient-ingreso-country2.png",
+       #width = 7.72, size = 5.22, units = "in", 
+       dpi = 200)
+
+
+
+#### Microdata ---------------------------------------------------------
+### Econometrics ----
+## Data ----
+# Complete sample ----
+lapop_sample <- 
+  lapop %>%
+  filter(!is.na(colorr)) %>% 
+  select(idnum, weight1500b, 
+         # Income
+         incomeppp, income_not_na, 
+         # Continuous measures of skin tone
+         colorr, colorr2, color_z, colorr_clps,
+         # Dummy measures of skin tone
+         colorr_2:colorr_11,
+         colorr_clps_2:colorr_clps_9,
+         colorr_fct_Medium, colorr_fct_Dark,
+         # Covariates
+         sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         # Fixed effects
+         cluster_id,
+         countrycode, country_region, country_mun, country_prov, 
+         fecha, year, 
+         # Sample design
+         estratopri, 
+         # Interviewer 
+         intid, colori
+  ) %>% 
+  fastDummies::dummy_cols(select_columns = c("sex", "ocupation", "etnia", "edocivil", "localidad", "religion" ),
+                          remove_most_frequent_dummy = TRUE,
+                          remove_selected_columns = TRUE
+  ) %>% 
+  mutate(
+    incomeppp = if_else(is.na(incomeppp) == T, 0, incomeppp),
+    lincomeppp = case_when(
+      incomeppp == 0 ~ 1,
+      is.na(incomeppp) == T ~ 1,
+      TRUE ~ incomeppp
+    ),
+    lincomeppp = log(lincomeppp)
+  ) 
+
+
+covs1 = names(lapop_sample %>% select(everything(), -lincomeppp, -incomeppp, -idnum, -weight1500b, -estratopri,
+                                      -countrycode,-country_region, -country_prov, -country_mun,
+                                      -fecha, -year,
+                                      -income_not_na, 
+                                      -colorr, -colorr2, -color_z, -colorr_clps,
+                                      -(colorr_2:colorr_11),
+                                      -(colorr_clps_2:colorr_clps_9),
+                                      -colorr_fct_Medium, -colorr_fct_Dark,
+                                      -cluster_id, -intid, -colori,
+))
+
+# Strictly positive income ----
+lapop_sample_pi <- 
+  lapop %>%
+  filter(!is.na(colorr)) %>% 
+  filter(income > 0) %>% 
+  filter(!is.na(income)) %>% 
+  select(idnum, weight1500b, 
+         # Income
+         incomeppp, income_not_na, 
+         # Continuous measures of skin tone
+         colorr, colorr2, color_z, colorr_clps,
+         # Dummy measures of skin tone
+         colorr_2:colorr_11,
+         colorr_clps_2:colorr_clps_9,
+         colorr_fct_Medium, colorr_fct_Dark,
+         # Covariates
+         sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         # Fixed effects
+         cluster_id,
+         countrycode, country_region, country_mun, country_prov, 
+         fecha, year, 
+         # Sample design
+         estratopri, 
+         # Interviewer 
+         intid, colori
+  ) %>% 
+  fastDummies::dummy_cols(select_columns = c("sex", "ocupation", "etnia", "edocivil", "localidad", "religion" ),
+                          remove_most_frequent_dummy = TRUE,
+                          remove_selected_columns = TRUE
+  ) %>% 
+  mutate(
+    lincomeppp = log(incomeppp)
+  ) 
+
+lapop_sample_pi_sfd <- 
+  lapop_sample_pi %>% 
+  group_by(countrycode, country_mun, cluster_id, year) %>% 
+  arrange(idnum) %>% 
+  mutate_at(
+    vars(everything(), -idnum, -weight1500b, -estratopri, -intid,
+         -countrycode,-country_region, -country_prov, -country_mun, -cluster_id,
+         -fecha, -year),
+    funs(. - lag(.))
+  ) %>% 
+  ungroup() %>% 
+  select(-idnum)
+
+
+covs2 = names(lapop_sample_pi %>% select(everything(), -lincomeppp, -incomeppp, -idnum, -weight1500b, -estratopri,
+                                         -countrycode,-country_region, -country_prov, -country_mun,
+                                         -fecha, -year,
+                                         -income_not_na, 
+                                         -colorr, -colorr2, -color_z, -colorr_clps,
+                                         -(colorr_2:colorr_11),
+                                         -(colorr_clps_2:colorr_clps_9),
+                                         -colorr_fct_Medium, -colorr_fct_Dark,
+                                         -cluster_id, -intid, -colori,
+))
+
+# Workers complete sample ----
+lapop_sample_wrks <- 
+  lapop %>%
+  filter(!is.na(colorr)) %>% 
+  select(idnum, weight1500b, 
+         # Income
+         incomeppp, income_not_na, 
+         # Continuous measures of skin tone
+         colorr, colorr2, color_z, colorr_clps,
+         # Dummy measures of skin tone
+         colorr_2:colorr_11,
+         colorr_clps_2:colorr_clps_9,
+         colorr_fct_Medium, colorr_fct_Dark,
+         # Covariates
+         sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         # Fixed effects
+         cluster_id,
+         countrycode, country_region, country_mun, country_prov, 
+         fecha, year, 
+         # Sample design
+         estratopri, 
+         # Interviewer 
+         intid, colori,
+         # Occupational controls
+         ocupoit
+  ) %>% 
+  filter(ocupoit != "") %>% 
+  fastDummies::dummy_cols(select_columns = c("sex", "ocupation", "etnia", "edocivil", "localidad", "religion", "ocupoit" ),
+                          remove_most_frequent_dummy = TRUE,
+                          remove_selected_columns = TRUE
+  ) %>% 
+  mutate(
+    incomeppp = if_else(is.na(incomeppp) == T, 0, incomeppp),
+    lincomeppp = case_when(
+      incomeppp == 0 ~ 1,
+      is.na(incomeppp) == T ~ 1,
+      TRUE ~ incomeppp
+    ),
+    lincomeppp = log(lincomeppp)
+  ) 
+
+
+covs3 = names(lapop_sample_wrks %>% select(everything(), -lincomeppp, -incomeppp, -idnum, -weight1500b, -estratopri,
+                                           -countrycode,-country_region, -country_prov, -country_mun,
+                                           -fecha, -year,
+                                           -income_not_na, 
+                                           -colorr, -colorr2, -color_z, -colorr_clps,
+                                           -(colorr_2:colorr_11),
+                                           -(colorr_clps_2:colorr_clps_9),
+                                           -colorr_fct_Medium, -colorr_fct_Dark,
+                                           -cluster_id, -intid, -colori,
+))
+
+# Workers strictly positive income ----
+lapop_sample_pi_wrks <- 
+  lapop %>%
+  filter(!is.na(colorr)) %>% 
+  filter(income > 0) %>% 
+  filter(!is.na(income)) %>% 
+  select(idnum, weight1500b, 
+         # Income
+         incomeppp, income_not_na, 
+         # Continuous measures of skin tone
+         colorr, colorr2, color_z, colorr_clps,
+         # Dummy measures of skin tone
+         colorr_2:colorr_11,
+         colorr_clps_2:colorr_clps_9,
+         colorr_fct_Medium, colorr_fct_Dark,
+         # Covariates
+         sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         # Fixed effects
+         cluster_id,
+         countrycode, country_region, country_mun, country_prov, 
+         fecha, year, 
+         # Sample design
+         estratopri, 
+         # Interviewer 
+         intid, colori,
+         # Occupational controls
+         ocupoit
+  ) %>% 
+  filter(ocupoit != "") %>% 
+  fastDummies::dummy_cols(select_columns = c("sex", "ocupation", "etnia", "edocivil", "localidad", "religion", "ocupoit" ),
+                          remove_most_frequent_dummy = TRUE,
+                          remove_selected_columns = TRUE
+  ) %>% 
+  mutate(
+    lincomeppp = log(incomeppp)
+  ) 
+
+lapop_sample_pi_wrks_sfd <- 
+  lapop_sample_pi_wrks %>% 
+  group_by(countrycode, country_mun, cluster_id, year) %>% 
+  arrange(idnum) %>% 
+  mutate_at(
+    vars(everything(), -idnum, -weight1500b, -estratopri, -cluster_id, -intid,
+         -countrycode,-country_region, -country_prov, -country_mun,
+         -fecha, -year),
+    funs(. - lag(.))
+  ) %>% 
+  ungroup() %>% 
+  select(-idnum) 
+
+covs4 = names(lapop_sample_wrks %>% select(everything(), -lincomeppp, -incomeppp, -idnum, -weight1500b, -estratopri,
+                                           -countrycode,-country_region, -country_prov, -country_mun,
+                                           -fecha, -year,
+                                           -income_not_na, 
+                                           -colorr, -colorr2, -color_z, -colorr_clps,
+                                           -(colorr_2:colorr_11),
+                                           -(colorr_clps_2:colorr_clps_9),
+                                           -colorr_fct_Medium, -colorr_fct_Dark,
+                                           -cluster_id, -intid, -colori,
+))
+
+
+## Specifications ----
+
+color_dummies = c("colorr_2", "colorr_3", "colorr_4", "colorr_5", "colorr_6",
+                  "colorr_7", "colorr_8", "colorr_9", "colorr_10", "colorr_11"
+)
+
+color_clps_dummies = c("colorr_clps_2", "colorr_clps_3", "colorr_clps_4", "colorr_clps_5", "colorr_clps_6",
+                       "colorr_clps_7", "colorr_clps_8", "colorr_clps_9"
+)
+
+# OLS Baslines ----
+base1 <- feols(lincomeppp ~ colorr_clps, 
+               lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+base2 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2), 
+               lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+base3 <- feols(lincomeppp ~ colorr_clps  + I(colorr_clps^2)| countrycode^year, 
+               lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+base4 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) | country_region^year, 
+               lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+base5 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) | country_prov^year, 
+               lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+base6 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) | country_mun^year, 
+               lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+base7 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) | cluster_id, 
+               lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+
+modelsummary(
+  list(base1,base2,base3,base4,base5,base6, base7),
+  output = "latex",
+  stars = stars_sig
+)
+
+# OLS ----
+ols1 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) | cluster_id, 
+              lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+ols2 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) + sex_Female | cluster_id, 
+              lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+ols3 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) + sex_Female + ed | cluster_id, 
+              lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+ols4 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) + sex_Female + ed + age + age2 | cluster_id, 
+              lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+ols5 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) + sex_Female + ed + age + age2 +
+                etnia_Afro + etnia_Indigenous + etnia_Mulata + etnia_Other + etnia_White
+              | cluster_id, 
+              lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+ols6 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) + .[covs2] | cluster_id, 
+              lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+ols7 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) + .[covs2] + colori | cluster_id + intid, 
+              lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+ols8 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) + .[covs4] | cluster_id, 
+              lapop_sample_pi_wrks , weights = (lapop_sample_pi_wrks)$weight1500b)
+
+ols9 <- feols(lincomeppp ~ colorr_clps + I(colorr_clps^2) + .[covs4] + colori | cluster_id + intid,
+              lapop_sample_pi_wrks , weights = (lapop_sample_pi_wrks)$weight1500b)
+
+# OLS - Dummy ----
+
+ols_d1 <- feols(lincomeppp ~ .[color_clps_dummies] + .[covs2] + colori | cluster_id + fecha + intid,
+                lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b, cluster = ~ cluster_id)
+
+ols_d2 <- feols(lincomeppp ~ .[color_clps_dummies] +  .[covs4] + colori | cluster_id + fecha + intid,
+                lapop_sample_pi_wrks, weights = (lapop_sample_pi_wrks)$weight1500b, cluster = ~ cluster_id)
+
+broom::tidy(ols_d1) %>% 
+  select(term, estimate, std.error) %>% 
+  filter(str_detect(term, "colorr")) %>% 
+  mutate(
+    term = as.numeric(str_sub(term, 13)),
+    lci = estimate - 1.96*std.error,
+    uci = estimate + 1.96*std.error,
+  ) %>% 
+  ggplot(aes(term, estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_point(size = 3) +
+  geom_linerange(aes(ymin = lci, ymax = uci)) +
+  scale_color_manual(values = c("#F6E2DD","#EAC1B7","#E7CAA5","#C0A280","#9E7C53",
+                                "#85664E", "#70503B", "#523C2F", "#432811", "#383128"
+  )) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  labs(x = "PERLA scale", y = "Estimate") +
+  theme(legend.position = "none")
+
+broom::tidy(ols_d2) %>% 
+  select(term, estimate, std.error) %>% 
+  filter(str_detect(term, "colorr")) %>% 
+  mutate(
+    term = as.numeric(str_sub(term, 13)),
+    lci = estimate - 1.96*std.error,
+    uci = estimate + 1.96*std.error,
+  ) %>% 
+  ggplot(aes(term, estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_point(size = 3) +
+  geom_linerange(aes(ymin = lci, ymax = uci)) +
+  scale_color_manual(values = c("#F6E2DD","#EAC1B7","#E7CAA5","#C0A280","#9E7C53",
+                                "#85664E", "#70503B", "#523C2F", "#432811", "#383128"
+  )) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  labs(x = "PERLA scale", y = "Estimate") +
+  theme(legend.position = "none")
+
+# IV ----
+
+iv1 <- feols(lincomeppp ~ .[covs2] | cluster_id |  colorr_clps ~ colori + intid + fecha, 
+             lapop_sample_pi, weights = (lapop_sample_pi)$weight1500b)
+
+iv2 <- feols(lincomeppp ~ .[covs4] | cluster_id |  colorr_clps ~ colori + intid + fecha, 
+             lapop_sample_pi_wrks , weights = (lapop_sample_pi_wrks)$weight1500b)
+
+# Poisson ----
+pois1 <- fepois(incomeppp ~ colorr_clps | cluster_id, 
+                lapop_sample, weights = (lapop_sample)$weight1500b, cluster = ~ cluster_id)
+
+pois2 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) | cluster_id, 
+                lapop_sample, weights = (lapop_sample)$weight1500b, cluster = ~ cluster_id)
+
+pois3 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) + sex_Female | cluster_id, 
+                lapop_sample, weights = (lapop_sample)$weight1500b, cluster = ~ cluster_id)
+
+pois4 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) + sex_Female + ed | cluster_id, 
+                lapop_sample, weights = (lapop_sample)$weight1500b, cluster = ~ cluster_id)
+
+pois5 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) + sex_Female + ed + age + age2 | cluster_id, 
+                lapop_sample, weights = (lapop_sample)$weight1500b, cluster = ~ cluster_id)
+
+pois6 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) + sex_Female + ed + age + age2 +
+                  etnia_Afro + etnia_Indigenous + etnia_Mulata + etnia_Other + etnia_White
+                | cluster_id, 
+                lapop_sample, weights = (lapop_sample)$weight1500b, cluster = ~ cluster_id)
+
+pois7 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) + .[covs1] | cluster_id, 
+                lapop_sample, weights = (lapop_sample)$weight1500b, cluster = ~ cluster_id)
+
+pois8 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) + .[covs1] + colori | cluster_id + intid, 
+                lapop_sample, weights = (lapop_sample)$weight1500b, cluster = ~ cluster_id)
+
+pois9 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) + .[covs3] | cluster_id, 
+                lapop_sample_wrks , weights = (lapop_sample_wrks)$weight1500b)
+
+pois10 <- fepois(incomeppp ~ colorr_clps + I(colorr_clps^2) + .[covs3] + colori | cluster_id + intid, 
+                 lapop_sample_wrks , weights = (lapop_sample_wrks)$weight1500b)
+
+# SFD ----
+
+sfd1 <- feols(lincomeppp ~  colorr_clps | cluster_id, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+sfd2 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) | cluster_id, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+sfd3 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) + sex_Female | cluster_id, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+sfd4 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) + sex_Female + ed | cluster_id, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+sfd5 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) + sex_Female + ed + age + age2 | cluster_id, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+sfd6 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) + sex_Female + ed + age + age2  +
+                etnia_Afro + etnia_Indigenous + etnia_Mulata + etnia_Other + etnia_White 
+              | cluster_id, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+sfd7 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) + .[covs2] | cluster_id, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+sfd8 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) + .[covs2] + colori | cluster_id + fecha + intid, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+sfd9 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) + .[covs4] | cluster_id, lapop_sample_pi_wrks_sfd , weights = lapop_sample_pi_wrks_sfd$weight1500b)
+
+sfd10 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) + .[covs4] + colori | cluster_id + fecha + intid, lapop_sample_pi_wrks_sfd , weights = lapop_sample_pi_wrks_sfd$weight1500b)
+
+# SFD - Dummy ----
+
+sfd_d1 <- feols(lincomeppp ~ .[color_clps_dummies] + .[covs2] + colori | cluster_id + fecha + intid,
+                lapop_sample_pi_sfd, weights = (lapop_sample_pi_sfd)$weight1500b, cluster = ~ cluster_id)
+
+sfd_d2 <- feols(lincomeppp ~ .[color_clps_dummies] +  .[covs4] + colori | cluster_id,
+                lapop_sample_pi_wrks_sfd, weights = (lapop_sample_pi_wrks_sfd)$weight1500b, cluster = ~ cluster_id)
+
+broom::tidy(sfd_d1) %>% 
+  select(term, estimate, std.error) %>% 
+  filter(str_detect(term, "colorr")) %>% 
+  mutate(
+    term = as.numeric(str_sub(term, 13)),
+    lci = estimate - 1.96*std.error,
+    uci = estimate + 1.96*std.error,
+  ) %>% 
+  ggplot(aes(term, estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_point(size = 3) +
+  geom_linerange(aes(ymin = lci, ymax = uci)) +
+  scale_color_manual(values = c("#F6E2DD","#EAC1B7","#E7CAA5","#C0A280","#9E7C53",
+                                "#85664E", "#70503B", "#523C2F", "#432811", "#383128"
+  )) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  labs(x = "PERLA scale", y = "Estimate") +
+  theme(legend.position = "none")
+
+broom::tidy(sfd_d2) %>% 
+  select(term, estimate, std.error) %>% 
+  filter(str_detect(term, "colorr")) %>% 
+  mutate(
+    term = as.numeric(str_sub(term, 13)),
+    lci = estimate - 1.96*std.error,
+    uci = estimate + 1.96*std.error,
+    
+  ) %>% 
+  ggplot(aes(term, estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_point(size = 3) +
+  geom_linerange(aes(ymin = lci, ymax = uci)) +
+  scale_color_manual(values = c("#F6E2DD","#EAC1B7","#E7CAA5","#C0A280","#9E7C53",
+                                "#85664E", "#70503B", "#523C2F", "#432811", "#383128"
+  )) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  labs(x = "PERLA scale", y = "Estimate") +
+  theme(legend.position = "none")
+
+
+# Robustness ----
+lapop_sample_rbst <- 
+  lapop %>%
+  select(idnum, weight1500b, 
+         incomeppp_pred, riq1, 
+         # Continuous measures of skin tone
+         colorr, colorr2, color_z, colorr_clps,
+         # Dummy measures of skin tone
+         colorr_2:colorr_11,
+         colorr_clps_2:colorr_clps_9,
+         colorr_fct_Medium, colorr_fct_Dark,
+         # Covariates
+         sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         # Fixed effects
+         cluster_id,
+         countrycode, country_region, country_mun, country_prov, 
+         fecha, year, 
+         # Sample design
+         estratopri, 
+         # Interviewer 
+         intid, colori
+  ) %>% 
+  fastDummies::dummy_cols(select_columns = c("sex", "ocupation", "etnia", "edocivil", "localidad", "religion"),
+                          remove_most_frequent_dummy = TRUE,
+                          remove_selected_columns = TRUE
+  ) %>% 
+  mutate(
+    incomeppp_pred = if_else(incomeppp_pred <= 0, 1, incomeppp_pred),
+    incomeppp_pred = log(incomeppp_pred)
+  )
+
+lapop_sample_rbst_sfd <- 
+  lapop_sample_rbst %>% 
+  group_by(country_mun, cluster_id, year) %>% 
+  arrange(idnum) %>% 
+  mutate_at(
+    vars(everything(), -idnum, -weight1500b, -estratopri, -cluster_id, -intid, -colori,
+         -countrycode,-country_region, -country_prov, -country_mun,
+         -fecha, -year),
+    funs(. - lag(.))
+  ) %>% 
+  ungroup() %>% 
+  select(-idnum) 
+
+covs5 = names(lapop_sample_rbst %>% select(everything(), -riq1, -incomeppp_pred, -idnum, -weight1500b, -estratopri,
+                                           -countrycode,-country_region, -country_prov, -country_mun,
+                                           -fecha, -year,
+                                           -colorr, -colorr2, -color_z, -colorr_clps,
+                                           -(colorr_2:colorr_11),
+                                           -(colorr_clps_2:colorr_clps_9),
+                                           -colorr_fct_Medium, -colorr_fct_Dark,
+                                           -cluster_id, -intid, -colori,
+))
+
+covs5_1 = names(lapop_sample_pi %>% select(everything(), 
+                                           -idnum, -weight1500b, -estratopri,
+                                           -incomeppp, -lincomeppp, -income_not_na,
+                                           -countrycode,-country_region, -country_prov, -country_mun,
+                                           -fecha, -year,
+                                           -colorr, -colorr2, -color_z, -colorr_clps,
+                                           -(colorr_2:colorr_11),
+                                           -(colorr_clps_2:colorr_clps_9),
+                                           -colorr_fct_Medium, -colorr_fct_Dark,
+                                           -cluster_id, -intid, -colori,
+                                           -ed
+))
+
+rb1 <- feols(incomeppp_pred ~ .[color_clps_dummies] + .[covs5] | cluster_id + intid, lapop_sample_rbst_sfd , weights = lapop_sample_rbst_sfd$weight1500b)
+
+rb2 <- feols(riq1 ~ .[color_clps_dummies] + .[covs5] | cluster_id + intid, lapop_sample_rbst_sfd , weights = lapop_sample_rbst_sfd$weight1500b)
+
+rb3 <- feols(scale(ed) ~ .[color_clps_dummies] + .[covs5_1] | cluster_id + intid, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+
+broom::tidy(rb3) %>% 
+  select(term, estimate, std.error) %>% 
+  filter(str_detect(term, "colorr")) %>% 
+  mutate(
+    term = as.numeric(str_sub(term, 13)),
+    lci = estimate - 1.96*std.error,
+    uci = estimate + 1.96*std.error,
+  ) %>% 
+  ggplot(aes(term, estimate, color = factor(term))) +
+  geom_hline(yintercept = 0) +
+  geom_point(size = 3) +
+  geom_linerange(aes(ymin = lci, ymax = uci)) +
+  scale_color_manual(values = c("#F6E2DD","#EAC1B7","#E7CAA5","#C0A280","#9E7C53",
+                                "#85664E", "#70503B", "#523C2F", "#432811", "#383128"
+  )) +
+  scale_x_continuous(breaks = seq(1,10)) +
+  labs(x = "PERLA scale", y = "Estimate") +
+  theme(legend.position = "none")
+
+## Tables ----
+
+modelsummary(
+  list(ols1,ols2,ols3,ols4,ols5, ols6, ols7, ols8, ols9, ols10),
+  output = "latex",
+  stars = stars_sig
+)
+
+
+## Racial Discrimination: OBD (Ñopo 2008) + SFD (Druckenmiller and Hsiang 2018) ----
+# Income (>0) ----
+lapop_sample <- 
+  lapop %>%
+  select(idnum, weight1500b, incomeppp, colorr, colorr2, sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         country_region, country_mun, country_prov, 
+         fecha, year, 
+         estratopri, #, upm
+         countrycode,
+         cluster
+         # IMR
+  ) %>% 
+  mutate(
+    country_mun = stringi::stri_trans_general(country_mun, "Latin-ASCII"),
+    country_prov = stringi::stri_trans_general(country_prov, "Latin-ASCII")
+  ) %>% 
+  fastDummies::dummy_cols(select_columns = c("sex", "ocupation", "etnia", "edocivil", "localidad", "religion"),
+                          remove_most_frequent_dummy = TRUE,
+                          remove_selected_columns = TRUE
+  ) %>% 
+  fastDummies::dummy_cols(select_columns = c("country_region", "year"),
+                          remove_first_dummy = TRUE,
+                          remove_selected_columns = FALSE
+  ) %>% 
+  filter(incomeppp > 0) %>% 
+  mutate(incomeppp = log(incomeppp)) %>% 
+  drop_na() %>% 
+  group_by(countrycode, country_mun, cluster, year) %>% 
+  arrange(idnum) %>% 
+  mutate_at(
+    vars(everything(), -idnum, -weight1500b, -estratopri, 
+         -country_region, -country_prov, -country_mun,
+         -fecha, -year),
+    funs(. - lag(.))
+  ) %>% 
+  ungroup() %>% 
+  select(-idnum, -cluster) 
+
+# Bootstrap
+nboot <- 500
+set.seed(1234)
+boot <- bootstraps(lapop_sample_pi, stratum = estratopri, times = nboot)
+
+OBD_inc_ss <- tibble()
+
+for (b in 1:nboot) {
+  print(str_c(b, "_inc"))
+  foo <- rsample::analysis(boot$splits[[b]]) 
+  
+  ### Means in covariates
+  means <- 
+    foo %>% 
+    select(-weight1500b, -incomeppp, 
+           -colorr, -colorr2,
+           -countrycode, -country_region, -country_prov, -country_mun,
+           -fecha, -year,
+           -estratopri, 
+    )  %>% 
+    summarise_all(weighted.mean, w = foo$weight1500b, na.rm = T)
+  
+  means <- 
+    as_tibble(cbind(term = names(means), t(means))) %>% 
+    mutate(means = as.double(V2)) %>% select(term, means)
+  
+  ### OBD continous (Ñopo 2008) 
+  ## STEP 1: Mincer equation
+  mincer <- feols(incomeppp ~ colorr + colorr2 | country_region + year, data = foo, weights = foo$weight1500b)
+  summary(mincer)
+  
+  ## STEP 2: Extended Mincer equation
+  # Formula
+  cobd <- 
+    as.formula(
+      str_c("incomeppp ~ (colorr + colorr2) * (", 
+            str_c(names(foo %>% 
+                          select(-weight1500b, -incomeppp, 
+                                 -colorr, -colorr2,
+                                 -countrycode, -country_region, -country_prov, -country_mun,
+                                 -fecha, -year,
+                                 -estratopri
+                          )), collapse = ' + '),
+            ") | country_region + year")
+    )
+  # Estimation
+  mincer_ext <- feols(cobd, data = foo, weights = foo$weight1500b)
+  
+  ## STEP 3: OB Continous Decomposition
+  # Get tidy estimates for the interaction terms
+  coef_1 <- 
+    broom::tidy(mincer_ext) %>% 
+    select(term, estimate) %>% 
+    filter(str_starts(term, "colorr")) %>% 
+    filter(str_detect(term, "colorr2") == F) %>% 
+    filter(term != "colorr") %>% 
+    mutate(term = str_remove(term, "colorr:"))
+  
+  # coef_2 <- 
+  #   broom::tidy(mincer_ext) %>% 
+  #   select(term, estimate) %>% 
+  #   filter(str_starts(term, "colorr2")) %>% 
+  #   filter(term != "colorr2") %>% 
+  #   mutate(term = str_remove(term, "colorr2:"))
+  
+  # Inner product between estimates and means
+  coef_1 <- 
+    coef_1 %>% 
+    left_join(means) %>%
+    mutate(product = estimate * means) %>% 
+    select(-term) %>%  summarise_all(sum, na.rm = TRUE)
+  
+  # coef_2 <- 
+  #   coef_2 %>% 
+  #   left_join(means) %>%
+  #   mutate(product = estimate * means) %>% 
+  #   select(-term) %>%  summarise_all(sum, na.rm = TRUE)
+  
+  ### Parameters
+  OBD_inc_ss <- 
+    OBD_inc_ss %>% 
+    bind_rows(
+      # Coefficients
+      tibble(# Continous OBD
+        alpha = mincer$coefficients[1],
+        delta_0 = (mincer_ext$coefficients[1] + coef_1$product),
+        delta_x = alpha - delta_0,
+        nobs = nrow(foo %>% drop_na())
+      ) 
+    )
+  
+  
+}
+
+OBD_inc_ss %>% 
+  pivot_longer(cols = everything()) %>% 
+  filter(name != "nobs") %>% 
+  ggplot(aes(value, color = name, fill = name)) +
+  geom_density(alpha = .5) + geom_vline(xintercept = 0)
+
+OBD_inc_ss %>% 
+  summarise_all(mean)
+
+OBD_inc_ss %>% 
+  summarise_all(sd)
+
+write_csv(OBD_inc_ss, "~/Dropbox/Papers/UCR/Datos/OBD SFD/OBD_inc_ss.csv")
+
+OBD_inc_ss %>% 
+  pivot_longer(cols = everything()) %>% 
+  filter(name %in% c("alpha", "delta_0")) %>% 
+  ggplot(aes(value, color = name, fill = name)) +
+  geom_density(alpha = .5) + geom_vline(xintercept = 0)
+
+#
+
+
+# Income (>0 + workers) ----
+lapop_sample <- 
+  lapop %>%
+  select(idnum, weight1500b, incomeppp, colorr, colorr2, sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, ocupoit,
+         country_region, country_mun, country_prov, 
+         fecha, year, 
+         estratopri, #, upm
+         countrycode,
+         cluster
+  ) %>% 
+  filter(ocupoit != "") %>% 
+  fastDummies::dummy_cols(select_columns = c("sex", "ocupation", "etnia", "edocivil", "localidad", "religion", "ocupoit"),
+                          remove_most_frequent_dummy = TRUE,
+                          remove_selected_columns = TRUE
+  ) %>% 
+  fastDummies::dummy_cols(select_columns = c("country_region", "year"),
+                          remove_first_dummy = TRUE,
+                          remove_selected_columns = FALSE
+  ) %>% 
+  filter(incomeppp > 0) %>% 
+  mutate(incomeppp = log(incomeppp)) %>% 
+  drop_na() %>% 
+  group_by(countrycode, country_mun, cluster, year) %>% 
+  arrange(idnum) %>% 
+  mutate_at(
+    vars(everything(), -idnum, -weight1500b, -estratopri, 
+         -country_region, -country_prov, -country_mun,
+         -fecha, -year),
+    funs(. - lag(.))
+  ) %>% 
+  ungroup() %>% 
+  select(-idnum, -cluster) 
+
+# Bootstrap
+nboot <- 500
+set.seed(1234)
+boot <- bootstraps(lapop_sample, stratum = estratopri, times = nboot)
+
+OBD_inc_wrks <- tibble()
+
+for (b in 1:nboot) {
+  print(str_c(b, "_inc_wrks"))
+  foo <- rsample::analysis(boot$splits[[b]]) 
+  
+  ### Means in covariates
+  means <- 
+    foo %>% 
+    select(-weight1500b, -incomeppp, -colorr, -colorr2,
+           -country_region, -country_prov, -country_mun,
+           -fecha, -year,
+           -estratopri
+    ) %>% 
+    summarise_all(weighted.mean, w = foo$weight1500b)
+  
+  means <- 
+    as_tibble(cbind(term = names(means), t(means))) %>% 
+    mutate(means = as.double(V2)) %>% select(term, means)
+  
+  ### OBD continous (Ñopo 2008) without control function
+  ## STEP 1: Mincer equation
+  mincer <- feols(incomeppp ~ colorr + colorr2 | country_region + year, data = foo, weights = foo$weight1500b)
+  summary(mincer)
+  
+  ## STEP 2: Extended Mincer equation
+  # Formula
+  cobd <- 
+    as.formula(
+      str_c("incomeppp ~ (colorr + colorr2) * (", 
+            str_c(names(foo %>% 
+                          select(-weight1500b, -incomeppp, -colorr, -colorr2,
+                                 -countrycode, -country_region, -country_prov, -country_mun,
+                                 -fecha, -year,
+                                 -estratopri
+                          )
+            ), collapse = ' + '),
+            ") | country_region + year"
+      )
+    )
+  # Estimation
+  mincer_ext <- feols(cobd, data = foo, weights = foo$weight1500b)
+  
+  ## STEP 3: OB Continous Decomposition
+  # Get tidy estimates for the interaction terms
+  coef_1 <- 
+    broom::tidy(mincer_ext) %>% 
+    select(term, estimate) %>% 
+    filter(str_starts(term, "colorr")) %>% 
+    filter(str_detect(term, "colorr2") == F) %>% 
+    filter(term != "colorr") %>% 
+    mutate(term = str_remove(term, "colorr:"))
+  
+  # coef_2 <- 
+  #   broom::tidy(mincer_ext) %>% 
+  #   select(term, estimate) %>% 
+  #   filter(str_starts(term, "colorr2")) %>% 
+  #   filter(term != "colorr2") %>% 
+  #   mutate(term = str_remove(term, "colorr2:"))
+  
+  # Inner product between estimates and means
+  coef_1 <- 
+    coef_1 %>% 
+    left_join(means) %>%
+    mutate(product = estimate * means) %>% 
+    select(-term) %>%  summarise_all(sum, na.rm = TRUE)
+  
+  # coef_2 <- 
+  #   coef_2 %>% 
+  #   left_join(means) %>%
+  #   mutate(product = estimate * means) %>% 
+  #   select(-term) %>%  summarise_all(sum, na.rm = TRUE)
+  
+  ### Parameters
+  OBD_inc_wrks <- 
+    OBD_inc_wrks %>% 
+    bind_rows(
+      # Coefficients
+      tibble(# Continous OBD
+        alpha = mincer$coefficients[1],
+        delta_0 = (mincer_ext$coefficients[1] + coef_1$product),
+        delta_x = alpha - delta_0,
+        # IMR = mincer$coefficients[3],
+        nobs = nrow(foo %>% drop_na())
+      ) 
+    )
+  
+  
+}
+
+OBD_inc_wrks %>% 
+  summarise_all(mean)
+
+OBD_inc_wrks %>% 
+  summarise_all(sd)
+
+write_csv(OBD_inc_wrks, "~/Dropbox/Papers/UCR/Datos/OBD SFD/OBD_inc_wrks.csv")
+
+OBD_inc_wrks %>% 
+  pivot_longer(cols = everything()) %>% 
+  filter(name %in% c("alpha", "delta_0")) %>% 
+  ggplot(aes(value, color = name, fill = name)) +
+  geom_density(alpha = .5) + geom_vline(xintercept = 0)
+
+#
+
+
+
+## Coefficient by country ----
+# Income (>0) ----
+lapop_sample <- 
+  lapop %>%
+  select(idnum, wtb, weight1500b, incomeppp, colorr, colorr2, sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         country_region, country_mun, country_prov, 
+         fecha, year, 
+         estratopri, #, upm
+         countrycode,
+         cluster
+         # IMR
+  ) %>% 
+  filter(incomeppp > 0) %>% 
+  filter(!is.na(incomeppp)) %>%
+  mutate(
+    incomeppp = log(incomeppp),
+    country_mun = str_remove_all(country_mun, "'"),
+    country_mun = stringi::stri_trans_general(country_mun, "Latin-ASCII"),
+         ) %>% 
+  drop_na() 
+
+OBD_inc_cntry <- tibble()
+
+nboot <- 500
+
+for (c in levels(factor(lapop_sample$countrycode))){
+  
+  cntry <- 
+    lapop_sample %>% 
+    filter(countrycode == c) %>%
+    mutate(estratopri = droplevels(as.factor(estratopri)),
+           country_region = droplevels(as.factor(country_region)),
+           etnia = droplevels(as.factor(etnia)),
+    ) %>% 
+    fastDummies::dummy_cols(select_columns = c("sex", "ocupation", "etnia", "edocivil", "localidad", "religion"),
+                            remove_most_frequent_dummy = TRUE,
+                            remove_selected_columns = TRUE
+    ) %>%
+    fastDummies::dummy_cols(select_columns = c("country_mun", "year"),
+                            remove_first_dummy = TRUE,
+                            remove_selected_columns = FALSE
+    ) %>% 
+    group_by(country_mun, cluster, year) %>% 
+    arrange(idnum) %>% 
+    mutate_at(
+      vars(everything(), -idnum, -wtb, -weight1500b, -estratopri, 
+           -country_region, -country_prov, -country_mun,
+           -fecha, -year),
+      funs(. - lag(.))
+    ) %>% 
+    ungroup() %>% 
+    select(country_region, everything(), -idnum, -countrycode) %>% 
+    drop_na() 
+  
+  if(nrow(cntry) != 0){
+      
+      set.seed(1234)
+      boot <- bootstraps(cntry, strata = estratopri, times = nboot)
+      
+      foo1 <- tibble()
+      
+      for (b in 1:nboot) {
+        print(str_c(c, "_", b))
+        foo <- rsample::analysis(boot$splits[[b]]) 
+        
+        ### Means in covariates
+        means <- 
+          foo %>% 
+          select(-weight1500b, -incomeppp, 
+                 -colorr, -colorr2, 
+                 -country_region, -country_prov, -country_mun,
+                 -fecha, -year,
+                 -estratopri, 
+          ) %>% 
+          summarise_all(weighted.mean, w = foo$weight1500b, na.rm = T)
+        
+        means <- 
+          as_tibble(cbind(term = names(means), t(means))) %>% 
+          mutate(means = as.double(V2)) %>% select(term, means)
+        
+        ### OBD continous (Ñopo 2008) without control function
+        ## STEP 1: Mincer equation
+        mincer <- feols(incomeppp ~ colorr + colorr2 | country_mun + year, data = foo, weights = foo$weight1500b)
+        summary(mincer)
+        
+        ## STEP 2: Extended Mincer equation
+        # Formula
+        cobd <- 
+          as.formula(
+            str_c("incomeppp ~ (colorr + colorr2) * (", 
+                  str_c(names(foo %>% 
+                                select(-weight1500b, -wtb,
+                                       -incomeppp, -colorr, -colorr2,
+                                       -country_region, -country_prov, -country_mun,
+                                       -fecha, -year,
+                                       -estratopri,
+                                       -cluster
+                                )
+                  ), collapse = ' + '),
+                  ") | country_mun + year"
+            )
+          )
+        # Estimation
+        mincer_ext <- feols(cobd, data = foo, weights = foo$weight1500b)
+        
+        ## STEP 3: OB Continous Decomposition
+        # Get tidy estimates for the interaction terms
+        coef_1 <- 
+          broom::tidy(mincer_ext) %>% 
+          select(term, estimate) %>% 
+          filter(str_starts(term, "colorr")) %>% 
+          filter(str_detect(term, "colorr2") == F) %>% 
+          filter(term != "colorr") %>% 
+          mutate(term = str_remove(term, "colorr:"))
+        
+        # coef_2 <- 
+        #   broom::tidy(mincer_ext) %>% 
+        #   select(term, estimate) %>% 
+        #   filter(str_starts(term, "colorr2")) %>% 
+        #   filter(term != "colorr2") %>% 
+        #   mutate(term = str_remove(term, "colorr2:"))
+        
+        # Inner product between estimates and means
+        coef_1 <- 
+          coef_1 %>% 
+          left_join(means) %>%
+          mutate(product = estimate * means) %>% 
+          select(-term) %>%  summarise_all(sum, na.rm = TRUE)
+        
+        # coef_2 <- 
+        #   coef_2 %>% 
+        #   left_join(means) %>%
+        #   mutate(product = estimate * means) %>% 
+        #   select(-term) %>%  summarise_all(sum, na.rm = TRUE)
+        
+        ### Parameters
+        foo1 <- 
+          foo1 %>% 
+          rbind(
+            # Coefficients
+            tibble(# Continous OBD
+              alpha = mincer$coefficients[1],
+              delta_0 = (mincer_ext$coefficients[1] + coef_1$product),
+              delta_x = alpha - delta_0,
+              countrycode = c,
+              nobs = nrow(foo)
+            ) 
+          )
+        
+        
+      }
+      
+      OBD_inc_cntry <- 
+        OBD_inc_cntry %>% 
+        rbind(foo1)
+      
+    }
+  
+} 
+
+OBD_inc_cntry %>% 
+  pivot_longer(cols = (!country_region)) %>% 
+  filter(!(name %in% c("nobs", "delta_x"))) %>% 
+  ggplot(aes(y = country_region, x = value, color = name, fill = name)) +
+  ggridges::geom_density_ridges() +
+  scale_x_continuous(limits = c(-1,1)) +
+  geom_vline(xintercept = 0)
+
+OBD_inc_cntry %>% 
+  group_by(countrycode) %>% 
+  summarise_all(mean)
+
+OBD_inc_cntry %>% 
+  group_by(countrycode) %>% 
+  summarise_all(sd)
+
+write_csv(OBD_inc_cntry, "~/Dropbox/Papers/UCR/Datos/OBD SFD/OBD_inc_cntry.csv")
+
+
+## Coefficient by gender ----
+lapop_sample <- 
+  lapop %>%
+  select(idnum, weight1500b, incomeppp, colorr, colorr2, sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         country_region, country_mun, country_prov, 
+         fecha, year, 
+         estratopri, #, upm
+         #countrycode,
+         cluster
+  ) %>% 
+  filter(incomeppp > 0) %>% 
+  drop_na() 
+
+OBD_inc_gender <- tibble()
+
+nboot <- 250
+
+for (i in levels(factor(lapop_sample$sex))){
+  
+  gender <- 
+    lapop_sample %>% 
+    filter(sex == i)
+  
+  gender <- 
+    gender %>% 
+    select(-sex) %>% 
+    fastDummies::dummy_cols(select_columns = c("ocupation", "etnia", "edocivil", "localidad", "religion"),
+                            remove_most_frequent_dummy = TRUE,
+                            remove_selected_columns = TRUE
+    ) %>% 
+    fastDummies::dummy_cols(select_columns = c("country_region", "year"),
+                            remove_first_dummy = TRUE,
+                            remove_selected_columns = FALSE
+    ) %>% 
+    group_by(country_mun, cluster, year) %>% 
+    arrange(idnum) %>% 
+    mutate_at(
+      vars(everything(), -idnum, -weight1500b, -estratopri, 
+           -country_region, -country_prov, -country_mun,
+           -fecha, -year),
+      funs(. - lag(.))
+    ) %>% 
+    ungroup() %>% 
+    select(-idnum, -cluster) %>% 
+    drop_na() 
+  
+  if(nrow(gender) != 0){
+    
+    set.seed(1234)
+    boot <- bootstraps(gender, strata = estratopri, times = nboot)
+    
+    foo1 <- tibble()
+    
+    for (b in 1:nboot) {
+      print(str_c(i, b))
+      foo <- rsample::analysis(boot$splits[[b]]) 
+      
+      ### Means in covariates
+      means <- 
+        foo %>% 
+        select(-weight1500b, -incomeppp, -colorr, -colorr2,
+               -country_region, -country_prov, -country_mun,
+               -fecha, -year,
+               -estratopri
+        ) %>% 
+        summarise_all(weighted.mean, w = foo$weight1500b)
+      
+      means <- 
+        as_tibble(cbind(term = names(means), t(means))) %>% 
+        mutate(means = as.double(V2)) %>% select(term, means)
+      
+      ### OBD continous (Ñopo 2008) without control function
+      ## STEP 1: Mincer equation
+      mincer <- feols(log(incomeppp) ~ colorr + colorr2 | country_region + year, data = foo, weights = foo$weight1500b)
+      summary(mincer)
+      
+      ## STEP 2: Extended Mincer equation
+      # Formula
+      cobd <- 
+        as.formula(
+          str_c("log(incomeppp) ~ (colorr + colorr2) * (", 
+                str_c(names(foo %>% 
+                              select(-weight1500b, -incomeppp, -colorr, -colorr2,
+                                     -country_region, -country_prov, -country_mun,
+                                     -fecha, -year,
+                                     -estratopri
+                              )
+                ), collapse = ' + '),
+                ") | country_region + year"
+          )
+        )
+      # Estimation
+      mincer_ext <- feols(cobd, data = foo, weights = foo$weight1500b)
+      
+      ## STEP 3: OB Continous Decomposition
+      # Get tidy estimates for the interaction terms
+      coef_1 <- 
+        broom::tidy(mincer_ext) %>% 
+        select(term, estimate) %>% 
+        filter(str_starts(term, "colorr")) %>% 
+        filter(str_detect(term, "colorr2") == F) %>% 
+        filter(term != "colorr") %>% 
+        mutate(term = str_remove(term, "colorr:"))
+      
+      # Inner product between estimates and means
+      coef_1 <- 
+        coef_1 %>% 
+        left_join(means) %>%
+        mutate(product = estimate * means) %>% 
+        select(-term) %>%  summarise_all(sum, na.rm = TRUE)
+      
+      ### Parameters
+      foo1 <- 
+        foo1 %>% 
+        bind_rows(
+          # Coefficients
+          tibble(# Continous OBD
+            alpha = mincer$coefficients[1],
+            delta_0 = (mincer_ext$coefficients[1] + coef_1$product),
+            delta_x = alpha - delta_0,
+            gender = i,
+            nobs = nrow(foo)
+          ) 
+        )
+      
+      
+    }
+    
+    
+    OBD_inc_gender <- 
+      OBD_inc_gender %>% 
+      bind_rows(foo1)
+    
+  }
+  
+} 
+
+OBD_inc_gender %>% 
+  group_by(gender) %>% 
+  summarise_all(mean, na.rm = TRUE)
+
+OBD_inc_gender %>% 
+  group_by(gender) %>% 
+  summarise_all(sd, na.rm = TRUE)
+
+write_csv(OBD_inc_gender, "~/Dropbox/Papers/UCR/Datos/OBD SFD/OBD_inc_gender.csv")
+
+
+## Coefficient by ethnicity ----
+lapop_sample <- 
+  lapop %>%
+  select(idnum, weight1500b, incomeppp, colorr, colorr2, sex, age, age2, ed, ocupation, edocivil, 
+         etnia, localidad, trust, religion, 
+         country_region, country_mun, country_prov, 
+         fecha, year, 
+         estratopri, #, upm
+         #countrycode,
+         cluster
+  ) %>% 
+  filter(incomeppp > 0) %>% 
+  drop_na() 
+
+OBD_inc_ethnicity <- tibble()
+
+nboot <- 250
+
+for (i in levels(factor(lapop_sample$etnia))){
+  
+  etnia <- 
+    lapop_sample %>% 
+    filter(etnia == i)
+  
+  etnia <- 
+    etnia %>% 
+    select(-etnia) %>% 
+    fastDummies::dummy_cols(select_columns = c("ocupation", "sex", "edocivil", "localidad", "religion"),
+                            remove_most_frequent_dummy = TRUE,
+                            remove_selected_columns = TRUE
+    ) %>% 
+    fastDummies::dummy_cols(select_columns = c("country_region", "year"),
+                            remove_first_dummy = TRUE,
+                            remove_selected_columns = FALSE
+    ) %>% 
+    group_by(country_mun, cluster, year) %>% 
+    arrange(idnum) %>% 
+    mutate_at(
+      vars(everything(), -idnum, -weight1500b, -estratopri, 
+           -country_region, -country_prov, -country_mun,
+           -fecha, -year),
+      funs(. - lag(.))
+    ) %>% 
+    ungroup() %>% 
+    select(-idnum, -cluster) %>% 
+    drop_na() 
+  
+  if(nrow(etnia) != 0){
+    
+    set.seed(1234)
+    boot <- bootstraps(etnia, strata = estratopri, times = nboot)
+    
+    foo1 <- tibble()
+    
+    for (b in 1:nboot) {
+      print(str_c(i, b))
+      foo <- rsample::analysis(boot$splits[[b]]) 
+      
+      ### Means in covariates
+      means <- 
+        foo %>% 
+        select(-weight1500b, -incomeppp, -colorr, -colorr2,
+               -country_region, -country_prov, -country_mun,
+               -fecha, -year,
+               -estratopri
+        ) %>% 
+        summarise_all(weighted.mean, w = foo$weight1500b)
+      
+      means <- 
+        as_tibble(cbind(term = names(means), t(means))) %>% 
+        mutate(means = as.double(V2)) %>% select(term, means)
+      
+      ### OBD continous (Ñopo 2008) without control function
+      ## STEP 1: Mincer equation
+      mincer <- feols(log(incomeppp) ~ colorr + colorr2 | country_region + year, data = foo, weights = foo$weight1500b)
+      summary(mincer)
+      
+      ## STEP 2: Extended Mincer equation
+      # Formula
+      cobd <- 
+        as.formula(
+          str_c("log(incomeppp) ~ (colorr + colorr2) * (", 
+                str_c(names(foo %>% 
+                              select(-weight1500b, -incomeppp, -colorr, -colorr2,
+                                     -country_region, -country_prov, -country_mun,
+                                     -fecha, -year,
+                                     -estratopri
+                              )
+                ), collapse = ' + '),
+                ") | country_region + year"
+          )
+        )
+      # Estimation
+      mincer_ext <- feols(cobd, data = foo, weights = foo$weight1500b)
+      
+      ## STEP 3: OB Continous Decomposition
+      # Get tidy estimates for the interaction terms
+      coef_1 <- 
+        broom::tidy(mincer_ext) %>% 
+        select(term, estimate) %>% 
+        filter(str_starts(term, "colorr")) %>% 
+        filter(str_detect(term, "colorr2") == F) %>% 
+        filter(term != "colorr") %>% 
+        mutate(term = str_remove(term, "colorr:"))
+      
+      # Inner product between estimates and means
+      coef_1 <- 
+        coef_1 %>% 
+        left_join(means) %>%
+        mutate(product = estimate * means) %>% 
+        select(-term) %>%  summarise_all(sum, na.rm = TRUE)
+      
+      ### Parameters
+      foo1 <- 
+        foo1 %>% 
+        bind_rows(
+          # Coefficients
+          tibble(# Continous OBD
+            alpha = mincer$coefficients[1],
+            delta_0 = (mincer_ext$coefficients[1] + coef_1$product),
+            delta_x = alpha - delta_0,
+            etnia = i,
+            nobs = nrow(foo)
+          ) 
+        )
+      
+      
+    }
+    
+    
+    OBD_inc_ethnicity <- 
+      OBD_inc_ethnicity %>% 
+      bind_rows(foo1)
+    
+  }
+  
+} 
+
+
+OBD_inc_ethnicity %>% 
+  group_by(etnia) %>% 
+  summarise_all(mean, na.rm = TRUE)
+
+OBD_inc_ethnicity %>% 
+  group_by(etnia) %>% 
+  summarise_all(sd, na.rm = TRUE)
+
+write_csv(OBD_inc_ethnicity, "~/Dropbox/Papers/UCR/Datos/OBD SFD/OBD_inc_ethnicity.csv")
+
+
+
+### SFD + Unobservable selection + coefficient stability (Oster 2019) ----
+## Income (>0) ----
+sample <- lapop_sample_pi_sfd
+covs <- covs2
+
+r2_long_bmrk <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2)  + .[covs] | cluster_id + intid, lapop_sample_pi_sfd , weights = lapop_sample_pi_sfd$weight1500b)
+r2_long_bmrk <- r2(r2_long_bmrk, type = "r2")
+
+nboot <- 500
+set.seed(1234)
+boot_sample <- bootstraps(sample, stratum = estratopri, times = nboot)
+
+betas <- tibble()
+
+for (r in seq(r2_long_bmrk, .8, .05)) {
+  
+  rmax <- r
+  
+  for (b in 1:nboot) {
+    
+    print(paste("rmax:", r, "nboot:", b))
+    
+    foo <- rsample::analysis(boot_sample$splits[[b]]) 
+    
+    oster1 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2), foo , weights = foo$weight1500b)
+    oster2 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2)  + .[covs] | cluster_id + intid, foo , weights = foo$weight1500b)
+    
+    beta_short <- oster1$coefficients["colorr_clps"]
+    beta_long <- oster2$coefficients["colorr_clps"]
+    
+    r2_short <- r2(oster1, type = "r2")
+    r2_long <- r2(oster2, type = "r2")
+    
+    beta_badj <- beta_long - ((beta_short - beta_long)*((rmax - r2_long)/(r2_long - r2_short)))
+    
+    betas <- 
+      betas %>% 
+      rbind(
+        tibble(
+          rmax = rmax,
+          beta_badj = beta_badj
+        )
+      )
+    
+  }
+  
+  
+}
+
+betas %>% 
+  group_by(rmax) %>% 
+  summarise_all(mean) %>% 
+  left_join(
+    betas %>% 
+      group_by(rmax) %>% 
+      summarise_all(sd) %>% 
+      rename(beta_badj_sd = beta_badj)
+  ) %>% 
+  mutate(
+    beta_badj_lci = beta_badj - 1.96*beta_badj_sd,
+    beta_badj_uci = beta_badj + 1.96*beta_badj_sd,
+  ) %>% 
+  ggplot(aes(rmax, beta_badj)) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  geom_linerange(aes(ymin = beta_badj_lci, ymax = beta_badj_uci))
+
+write_csv(betas, "~/Dropbox/Papers/UCR/Datos/oster_betas_sfd.csv")
+
+## Income (>0 + workers) ----
+sample <- lapop_sample_pi_wrks_sfd
+covs <- covs4
+
+r2_long_bmrk <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2)  + .[covs] | cluster_id + intid, sample , weights = sample$weight1500b)
+r2_long_bmrk <- r2(r2_long_bmrk, type = "r2")
+
+nboot <- 500
+boot_sample <- bootstraps(sample, stratum = estratopri, times = nboot)
+
+betas_wrks <- tibble()
+
+for (r in seq(r2_long_bmrk, .8, .05)) {
+  
+  rmax <- r
+  
+  for (b in 1:nboot) {
+    
+    print(paste("rmax:", r, "nboot:", b))
+    
+    foo <- rsample::analysis(boot_sample$splits[[b]]) 
+    
+    oster1 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2) , foo , weights = foo$weight1500b)
+    oster2 <- feols(lincomeppp ~  colorr_clps + I(colorr_clps^2)  + .[covs] | cluster_id + intid, foo , weights = foo$weight1500b)
+    
+    beta_short <- oster1$coefficients["colorr_clps"]
+    beta_long <- oster2$coefficients["colorr_clps"]
+    
+    r2_short <- r2(oster1, type = "r2")
+    r2_long <- r2(oster2, type = "r2")
+    
+    beta_badj <- beta_long - ((beta_short - beta_long)*((rmax - r2_long)/(r2_long - r2_short)))
+    
+    betas_wrks <- 
+      betas_wrks %>% 
+      rbind(
+        tibble(
+          rmax = rmax,
+          beta_badj = beta_badj
+        )
+      )
+    
+  }
+  
+  
+}
+
+betas_wrks %>% 
+  group_by(rmax) %>% 
+  summarise_all(mean) %>% 
+  left_join(
+    betas_wrks %>% 
+      group_by(rmax) %>% 
+      summarise_all(sd) %>% 
+      rename(beta_badj_sd = beta_badj)
+  ) %>% 
+  mutate(
+    beta_badj_lci = beta_badj - 1.96*beta_badj_sd,
+    beta_badj_uci = beta_badj + 1.96*beta_badj_sd,
+  ) %>% 
+  ggplot(aes(rmax, beta_badj)) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  geom_linerange(aes(ymin = beta_badj_lci, ymax = beta_badj_uci))
+
+write_csv(betas_wrks, "~/Dropbox/Papers/UCR/Datos/oster_betas_wrks_sfd.csv")
+
+
+#### Macrodata ---------------------------------------------------------

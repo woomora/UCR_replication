@@ -1,0 +1,1848 @@
+### Workplace ----
+rm(list = ls())
+pacman::p_load(tidyverse, rsample, fixest, readstata13,
+               ggridges, viridis, wesanderson, ggrepel,
+               fwildclusterboot, sf, raster,
+               rmapshaper, haven
+)
+
+setwd("~/Dropbox/Papers/UCR")
+
+select <- dplyr::select
+X11(type="cairo")
+
+
+lapop_gadm <- data.frame()
+lapop_regharm <- tibble()
+
+
+### Data ----
+lapop <- 
+  tibble(read.dta13("Datos/lapop.dta")) %>% 
+  mutate(colorr2 = colorr^2) %>% 
+  filter(year >= 2011) %>% 
+  filter(!(countrycode == "SLV" & year == 2012))
+
+
+### GADM regions ----
+## Stratification ----
+# Mexico ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_MEX_shp/gadm36_MEX_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+    ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "MEX") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov)
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "Estado de México" ~ "México",
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  )
+  
+
+foo1 <- 
+foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+# map %>% ggplot() + geom_sf(aes(fill = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- foo1
+  
+
+# Argentina ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_ARG_shp/gadm36_ARG_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "ARG") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    country_region = if_else(
+      country_region == "ARG_Capital_Federal", 
+      "ARG_AMBA_Capital_Federal_y_GBA",
+      country_region
+    )
+  )
+
+table(map$prov)
+table(lapop_cntry$prov)
+table(lapop_cntry$country_region)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "1701" ~ "AMBA",
+          prov == "1702" ~ "Córdoba",
+          prov == "1703" ~ "Santa Fe",
+          prov == "1704" ~ "Entre Ríos",
+          prov == "1706" ~ "Corrientes",
+          prov == "1707" ~ "Chaco",
+          prov == "1709" ~ "Salta",
+          prov == "1710" ~ "Santiago del Estero",
+          prov == "1711" ~ "Tucumán",
+          prov == "1714" ~ "Mendoza",
+          prov == "1715" ~ "San Juan",
+          prov == "1719" ~ "Neuquén",
+          prov == "1720" ~ "Río Negro",
+          prov == "1722" ~ "Prov. de Buenos Aires",
+          prov == "1723" ~ "La Pampa",
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov == "Ciudad de Buenos Aires" ~ "ARG_AMBA_Capital_Federal_y_GBA",
+      prov == "Buenos Aires" ~ "ARG_Prov_de_Buenos_Aires",
+      
+      prov == "San Luis" ~ "ARG_Cuyo",
+      
+      prov == "Chubut" ~ "ARG_Patagonia",
+      prov == "Santa Cruz" ~ "ARG_Patagonia",
+      prov == "Tierra del Fuego" ~ "ARG_Patagonia",
+      
+      prov == "Catamarca" ~ "ARG_NOA",
+      prov == "Jujuy" ~ "ARG_NOA",
+      prov == "La Rioja" ~ "ARG_NOA",
+      
+      prov == "Misiones" ~ "ARG_NEA",
+      prov == "Formosa" ~ "ARG_NEA",
+      
+      
+      
+      TRUE ~  country_region 
+    )
+  )
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+
+# X11(type = "cairo")
+foo %>% 
+  ggplot() + geom_sf(aes(fill = prov)) +
+  viridis::scale_fill_viridis(discrete = T)
+
+# X11(type = "cairo")
+foo1 %>% 
+  filter(country_region == "ARG_AMBA_Capital_Federal_y_GBA") %>% 
+  ggplot() + geom_sf(aes(fill = country_region)) +
+  viridis::scale_fill_viridis(discrete = T)
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(
+    foo1
+  )
+
+# Bolivia ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_BOL_shp/gadm36_BOL_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "BOL") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(as.character(lapop_cntry$prov))
+table(map$prov)
+
+# Code singularities
+foo <- 
+  lapop_cntry %>% 
+  mutate(
+    prov = case_when(
+      prov == "Beni" ~ "El Beni",
+      TRUE ~ as.character(prov)
+    ),
+    prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+  ) %>% 
+  group_by(estratopri, country_region, prov) %>% 
+  summarise() %>% 
+  left_join(
+    map
+  )
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# map %>% ggplot() + geom_sf(aes(fill = prov))
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Brazil ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_BRA_shp/gadm36_BRA_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "BRA") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(as.character(lapop_cntry$prov))
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = if_else(
+      is.na(country_region) == T, 
+      "BRA_Nordeste", country_region
+      )
+  )
+  
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# map %>% ggplot() + geom_sf(aes(fill = prov))
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Chile ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_CHL_shp/gadm36_CHL_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "CHL") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+  )
+
+table(lapop_cntry$prov)
+table(lapop_cntry$prov, lapop_cntry$country_region)
+table(map$prov)
+
+# Code singularities
+
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "1301" ~ "Tarapaca",
+          prov == "1302" ~ "Antofagasta",
+          prov == "1303" ~ "Atacama",
+          prov == "1304" ~ "Coquimbo",
+          prov == "1305" ~ "Valparaiso",
+          
+          prov == "1306" ~ "Libertador General Bernardo O'Higgins",
+          prov == "1307" ~ "Maule",
+          prov == "1308" ~ "Bio-Bio (Nuble)",
+          prov == "1309" ~ "Araucania",
+          
+          prov == "1310" ~ "Los Lagos",
+          prov == "1311" ~ "Aisen del General Carlos Ibanez del Campo",
+          prov == "1312" ~ "Magallanes y Antartica Chilena",
+          
+          prov == "1313" ~ "Region Metropolitana de Santiago",
+          prov == "1314" ~ "Los Rios",
+          prov == "1315" ~ "Arica y Parinacota",
+          
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII"),
+        country_region = case_when(
+          str_detect(country_region, "Central") == T ~ "CHL_Central",
+          str_detect(country_region, "North") == T ~ "CHL_North",
+          str_detect(country_region, "South") == T ~ "CHL_South",
+          TRUE ~ country_region
+        ),
+        country_region = if_else(
+          prov == "Region Metropolitana de Santiago", 
+          "CHL_Metropolitan", country_region)
+      ) %>% 
+      group_by(country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = if_else(
+      is.na(country_region), 
+      "CHL_South", country_region)
+  )
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+map %>% ggplot() + geom_sf() +
+  ggsflabel::geom_sf_label_repel(aes(label = prov))
+  
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+
+# Colombia ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_COL_shp/gadm36_COL_2.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    name_1 = if_else(
+      name_1 == "Cundinamarca" & 
+        name_2 %in% 
+        c("Santafé de Bogotá", "Bojacá", "Cajicá", "Chía", "Cogua", "Cota", "El Rosal",
+          "Facatativá", "Funza", "Gachancipá", "La Calera", "Madrid", "Mosquera", "Nemocón", 
+          "Soacha", "Sibaté", "Sopó", "Subachoque", "Tabio", "Tenjo", "Tocancipá", "Zipacón", "Zipaquirá"
+        ), "Bogotá", name_1
+    )
+  ) %>% 
+  group_by(name_1) %>% 
+  summarise(do_union = T) %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "COL") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov, lapop_cntry$country_region)
+table(as.character())
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  filter(prov != "San Andres y Providencia") %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "Bogotá, D.C." ~ "Bogota",
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov == "La Guajira" ~ "COL_Atlántica",
+      
+      prov == "Norte de Santander" ~ "COL_Oriental",
+      
+      prov == "Choco" ~ "COL_Pacífica",
+      prov == "Valle del Cauca" ~ "COL_Pacífica",
+      
+      prov == "Quindio" ~ "COL_Central",
+      
+      TRUE ~ country_region,
+    ),
+    
+    country_region = if_else(
+      is.na(country_region) == T,
+      "COL_Antiguos_Territorios_Nacionales",
+      country_region
+      ),
+    
+    country_region = if_else(
+      prov == "Bogota",
+      "COL_Bogotá",
+      country_region
+    ),
+  )
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Costa Rica ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_CRI_shp/gadm36_CRI_2.shp"
+
+# X11(type = "cairo")
+
+map %>% 
+  ggplot() + 
+  geom_sf(aes(fill = name_1), alpha = .3)
+
+map %>% 
+  mutate(
+    name_1 = stringi::stri_trans_general(name_1, "Latin-ASCII"),
+    name_2 = stringi::stri_trans_general(name_2, "Latin-ASCII")
+    ) %>% 
+  filter(name_1 %in% c("Alajuela")) %>% 
+  ggplot() + 
+  geom_sf(aes(fill = name_1), alpha = .3) +
+  ggsflabel::geom_sf_label_repel(aes(label = name_2))
+
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>%
+  sf::st_crop(xmin = -87.09486, xmax = -82.55322, ymin = 8, ymax = 11.21692) %>% 
+  mutate(
+    name_1 = stringi::stri_trans_general(name_1, "Latin-ASCII"),
+    name_2 = stringi::stri_trans_general(name_2, "Latin-ASCII"),
+    
+    country_region = case_when(
+      name_1 == "Guanacaste" & name_2 %in% c("Nandayure", "Hojancha", "Santa Cruz", "Bagaces", "Abangares") ~ "Rural Bajura",
+      name_1 == "Guanacaste" & !(name_2 %in% c("Nandayure", "Hojancha", "Santa Cruz", "Bagaces", "Abangares")) ~ "Urbano Bajura",
+     
+      name_1 == "Alajuela" & name_2 %in% c("Upala", "Guatuso", "Los Chiles", "San Mateo") ~ "Rural Bajura",
+      name_1 == "Alajuela" & name_2 %in% c("San Ramon", "Alfaro Ruiz", "Grecia", "Alajuela", "Poas", "Naranjo", "Palmares") ~ "Urbano Central",
+      name_1 == "Alajuela" & name_2 %in% c("Atenas", "Valverde Vega") ~ "Rural Central",
+      name_1 == "Alajuela" & name_2 %in% c("San Carlos", "Orotina") ~ "Urbano Bajura",
+      
+      name_1 == "Heredia" & name_2 %in% c("Heredia") ~ "AMJS",
+      name_1 == "Heredia" & name_2 %in% c("Sarapiqui") ~ "Rural Bajura",
+      name_1 == "Heredia" & name_2 %in% c("Santa Barbara", "Barva", "San Isidro") ~ "Rural Central",
+      name_1 == "Heredia" & name_2 %in% c("Belen", "Flores", "Santo Domingo", "San Rafael", "San Pablo") ~ "Rural Central",
+      
+      name_1 == "San Jose" & name_2 %in% c("Perez Zeledon") ~ "Urbano Bajura",
+      name_1 == "San Jose" & name_2 %in% c("Vasquez de Coronado", "Puriscal") ~ "Urbano Central",
+      name_1 == "San Jose" & name_2 %in% c("Leon Cortes", "Tarrazu", "Dota", "Turrubares", "Mora", "Acosta", "Curridabat") ~ "Rural Central",
+      name_1 == "San Jose" & !(name_2 %in% c("Perez Zeledon", "Vasquez de Coronado", "Puriscal", "Leon Cortes", "Tarrazu", "Dota", "Turrubares", "Mora", "Acosta", "Curridabat")) ~ "AMJS",
+      
+      name_1 == "Limon" & name_2 %in% c("Talamanca", "Matina") ~ "Rural Bajura",
+      name_1 == "Limon" & !(name_2 %in% c("Talamanca", "Matina")) ~ "Urbano Bajura",
+      
+      name_1 == "Puntarenas" & name_2 %in% c("Corredores", "Golfito", "Osa", "Buenos Aires", "Coto Brus", "Parrita") ~ "Rural Bajura",
+      name_1 == "Puntarenas" & !(name_2 %in% c("Corredores", "Golfito", "Osa", "Buenos Aires", "Coto Brus", "Parrita")) ~ "Urbano Bajura",
+      
+      name_1 == "Cartago" & name_2 %in% c("La Union", "Alvarado") ~ "Rural Central",
+      name_1 == "Cartago" & name_2 %in% c("Turrialba") ~ "Urbano Bajura",
+      name_1 == "Cartago" & name_2 %in% c("Jimenez") ~ "Rural Bajura",
+      name_1 == "Cartago" & !(name_2 %in% c("La Union", "Alvarado", "Turrialba", "Jimenez")) ~ "Urbano Central",
+    )
+  ) %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T) %>% 
+  select(country_region, geometry) %>% 
+  mutate(
+    country_region = case_when(
+      country_region == "AMJS" ~ "CRI_Amsj",
+      country_region == "Urbano Bajura" ~ "CRI_Urb_Bajura",
+      country_region == "Urbano Central" ~ "CRI_Urb_Central",
+      country_region == "Rural Bajura" ~ "CRI_Rur_Bajura",
+      country_region == "Rural Central" ~ "CRI_Rur_Central",
+    )
+  )
+
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "CRI") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri)
+  )
+
+foo1 <- map 
+
+map %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Dominican Republic ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_DOM_shp/gadm36_DOM_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "DOM") %>% 
+  mutate(
+    prov = fct_drop(prov),
+  )
+
+table(as.character(lapop_cntry$prov))
+table(map$prov)
+  
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      filter(year == 2019) %>% 
+      mutate(
+        prov = case_when(
+          prov == "San Pedro de M." ~ "San Pedro de Macoris",
+          prov == "San Juan de la M." ~ "San Juan",
+          prov == "Ma. T. Sánchez" ~ "Maria Trinidad Sanchez",
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov %in% c("Santo Domingo", "Distrito Nacional") ~ "DOM_Metropolitana",
+      prov %in% c("Ma. T. Sánchez", "San Pedro de M.", 
+                  "El Seybo", "La Romana", "La Altagracia") ~ "DOM_Este",
+      prov %in% c("Pedernales", "Independencia", 
+                  "Bahoruco", "Barahona",
+                  "Azua", "San Juan", "La Estrelleta", 
+                  "San Jose de Ocoa", "San Cristobal", "Peravia") ~ "DOM_Sur",
+      TRUE ~ "DOM_Norte"
+    )
+  )
+  
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+map %>% 
+  ggplot() + geom_sf() +
+  geom_sf_label(aes(label = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Ecuador ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_ECU_shp/gadm36_ECU_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "ECU") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(as.character(lapop_cntry$prov))
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  filter(prov != "Galapagos") %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov == "Orellana" ~ "ECU_Oriente",
+      prov == "Pastaza" ~ "ECU_Oriente",
+      
+      prov == "Santo Domingo de los Tsachilas" ~ "ECU_Sierra",
+      prov == "Carchi" ~ "ECU_Sierra",
+  
+      TRUE ~ country_region
+    )
+  )
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# El Salvador ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_SLV_shp/gadm36_SLV_2.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    name_1 = if_else(
+      name_1 == "San Salvador" & !(name_2 %in% c("El Paisnal", "Aguilares", "Guazapa", "Nejapa", 
+                                               "Tonacatepeque", "Rosario de Mora", "Panchimalco")),
+      "AMSS", name_1
+    ),
+    name_1 = if_else(
+      name_1 == "La Libertad" & name_2 %in% c("Antiguo Cuscatlan", "Santa Tecla", "Nueva San Salvador"),
+      "AMSS", name_1
+    )
+    
+  ) %>% 
+  group_by(name_1) %>% 
+  summarise(do_union = T) %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "SLV") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(as.character(lapop_cntry$country_region))
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov %in% c("Chalatenango", "La Libertad", "Cuscatlan", "San Salvador") ~ "SLV_Región_2_Central_1",
+      prov == "AMSS" ~ "SLV_Región_5_AMSS",
+      TRUE ~ country_region
+    ),
+    
+    country_region = case_when(
+      country_region == "SLV_Región_1_Occidental" ~ "SLV_Occidental",
+      country_region == "SLV_Región_2_Central_1" ~ "SLV_Central1",
+      country_region == "SLV_Región_3_Central_2" ~ "SLV_Central2",
+      country_region == "SLV_Región_4_Oriental" ~ "SLV_Oriental",
+      country_region == "SLV_Región_5_AMSS" ~ "SLV_AMSS",
+    )
+  )
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Guatemala ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_GTM_shp/gadm36_GTM_2.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    name_1 = if_else(
+      name_1 == "Quezaltenango" & 
+        name_2 %in% 
+        c("El Palmar", "Colomba", "Génova", "Coatepeque",
+          "Flores Costa Cuca"
+          ), "Quezaltenango Sur", name_1
+    ),
+    name_1 = if_else(
+      name_1 == "San Marcos" & 
+        name_2 %in% 
+        c("Ocos", "Ayutla", "Pajapita", "Catarina",
+          "Nuevo Progreso", "El Quetzal", "La Reforma"
+        ), "San Marcos Sur", name_1
+    ),
+  ) %>% 
+  group_by(name_1) %>% 
+  summarise(do_union = T) %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "GTM") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov, lapop_cntry$country_region)
+table((lapop_cntry$country_region))
+
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "201" ~ "Guatemala",
+          prov == "202" ~ "El Progreso",
+          prov == "203" ~ "Sacatepequez",
+          prov == "204" ~ "Chimaltenango",
+          prov == "205" ~ "Escuintla",
+          prov == "206" ~ "Santa Rosa",
+          prov == "207" ~ "Solola",
+          prov == "208" ~ "Totonicapan",
+          
+          prov == "209" & country_region == "GTM_Sur" ~ "Quezaltenango Sur",
+          prov == "209" & country_region == "GTM_Noroccidente" ~ "Quezaltenango",
+          
+          prov == "210" ~ "Suchitepequez",
+          prov == "211" ~ "Retalhuleu",
+          
+          prov == "212" & country_region == "GTM_Sur" ~ "San Marcos Sur",
+          prov == "212" & country_region == "GTM_Noroccidente" ~ "San Marcos",
+          
+          
+          prov == "213" ~ "Huehuetenango",
+          prov == "214" ~ "Quiche",
+          prov == "215" ~ "Baja Verapaz",
+          prov == "216" ~ "Alta Verapaz",
+          prov == "217" ~ "Peten",
+          prov == "218" ~ "Izabal",
+          prov == "219" ~ "Chiquimula",
+          prov == "220" ~ "Jalapa",
+          prov == "221" ~ "Jutiapa",
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = if_else(
+      is.na(country_region), "GTM_Nororiente", country_region
+    ),
+    country_region = if_else(
+      prov == "Jalapa", "GTM_Sur", country_region
+    ),
+  )
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+foo1 %>% 
+  ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+
+# Honduras ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_HND_shp/gadm36_HND_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "HND") %>% 
+  mutate(
+    prov = fct_drop(prov),
+  )
+
+table(lapop_cntry$prov, lapop_cntry$country_region)
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "401" ~ "Francisco Morazan",
+          prov == "402" ~ "Comayagua",
+          prov == "403" ~ "La Paz",
+          prov == "404" ~ "Cortes",
+          prov == "405" ~ "Atlantida",
+          prov == "406" ~ "Colon",
+          prov == "407" ~ "Yoro",
+          prov == "408" ~ "Islas de la Bahia",
+          prov == "409" ~ "Copan",
+          prov == "410" ~ "Intibuca",
+          prov == "411" ~ "Lempira",
+          prov == "412" ~ "Ocotepeque",
+          prov == "413" ~ "Santa Barbara",
+          prov == "418" ~ "El Paraiso",
+          prov == "419" ~ "Olancho",
+          prov == "420" ~ "Gracias a Dios",
+          prov == "421" ~ "Choluteca",
+          prov == "422" ~ "Valle",
+
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise()
+  )
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+# map %>% ggplot() + geom_sf(aes(fill = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Jamaica ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_JAM_shp/gadm36_JAM_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "JAM") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov)
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = str_replace(prov, "St.", "Saint"),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = if_else(
+      prov %in% c("Kingston", "Saint Andrew"), "JAM_KMA", country_region
+    ),
+    country_region = if_else(
+      prov %in% c("Saint Catherine"), "JAM_MIDDLESEX", country_region
+    ),
+  )
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+map %>% ggplot() + geom_sf() + geom_sf_label(aes(label = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Nicaragua ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_NIC_shp/gadm36_NIC_2.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    name_1 = if_else(
+      name_1 == "Managua" & 
+        name_2 %in% 
+        c("Mateare", "Villa Carlos Fonseca", "San Rafael del Sur"
+        ), "Managua Sur", name_1
+    )
+  ) %>% 
+  group_by(name_1) %>% 
+  summarise(do_union = T) %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "NIC") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov)
+table(lapop_cntry$country_region)
+
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = as.character(prov),
+        prov = if_else(prov == "RAAN", "Atlantico Norte", prov),
+        prov = if_else(prov == "RAAS", "Atlantico Sur", prov),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII"),
+        prov = if_else(country_region == "NIC_Pacifico_Sur" & prov == "Managua", "Managua Sur", prov)
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) 
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T) %>% 
+  filter(!is.na(country_region))
+
+# X11(type = "cairo")
+map %>% 
+  filter(name_1 == "Managua") %>% 
+  ggplot() + geom_sf() + 
+  geom_sf_label(aes(label = name_2))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+
+# Panama ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_PAN_shp/gadm36_PAN_2.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    name_1 = if_else(
+      name_1 == "Panamá" & 
+        name_2 %in% 
+        c("Panamá", "San Miguelito"
+        ), "Panama Metro", name_1
+    )
+  ) %>% 
+  group_by(name_1) %>% 
+  summarise(do_union = T) %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "PAN") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov, lapop_cntry$country_region)
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "Comarca Ngöbe Buglé" ~ "Ngobe Bugle",
+          prov == "Panamá" & country_region == "PAN_Metropolitana" ~ "Panama Metro",
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov %in% c("Chiriqui", "Bocas del Toro", "Ngobe Bugle") ~ "PAN_Occidental",
+      prov %in% c("Veraguas", "Herrera", "Los Santos", "Cocle") ~ "PAN_Central",
+      prov %in% c("Veraguas", "Herrera", "Los Santos", "Cocle") ~ "PAN_Central",
+      prov == "Panama Metro" ~ "PAN_Metropolitana",
+      TRUE ~ "PAN_Oriental"
+    )
+  )
+  
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+map %>% 
+  #filter(name_1 == "Panamá") %>% 
+  ggplot() + geom_sf() +
+  geom_sf_label(aes(label = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Paraguay ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_PRY_shp/gadm36_PRY_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "PRY") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov, lapop_cntry$country_region)
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "Pdte Hayes" ~ "Presidente Hayes",
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise()
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov == "Alto Paraguay" ~ "PRY_Zona_Norte",
+      prov == "Canindeyu" ~ "PRY_Zona_Este",
+      TRUE ~ country_region
+    )
+  )
+  
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+map %>% ggplot() + geom_sf() +
+  geom_sf_label(aes(label = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Peru ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_PER_shp/gadm36_PER_2.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    name_1 = case_when(
+      name_1 == "Lima" & name_2 %in% c("Canta", "Huarochiri", "Cañete", "Yauyos") ~ "Lima Sierra Centro",
+      name_1 == "Ica" & name_2 %in% c("Chincha") ~ "Ica Sierra Centro",
+      name_1 == "La Libertad" & name_2 == "Santiago de Chuco" ~ "La Libertad Sierra Centro",
+      name_1 == "La Libertad" & name_2 == "Bolívar" ~ "La Libertad Sierra Norte",
+      name_1 == "Ancash" & name_2 %in% c("Santa", "Casma", "Huarmey", "Ocros") ~ "Ancash Costa Norte",
+      name_1 == "Piura" & name_2 %in% c("Ayabaca", "Morropón", "Huancabamba") ~ "Piura Sierra Norte",
+      name_1 == "Cajamarca" & name_2 == "Contumazá" ~ "Cajamarca Costa Norte",
+      name_1 == "Lima" ~ "Lima Costa Norte",
+      name_1 == "Lima Province" ~ "Lima",
+      TRUE ~ name_1
+    )
+  ) %>% 
+  group_by(name_1) %>% 
+  summarise(do_union = T) %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "PER") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov)
+table(lapop_cntry$country_region)
+
+table(map$prov)
+table(map$name_1)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          prov == "1101" ~ "Amazonas",
+          prov == "1102" ~ "Ancash",
+          prov == "1103" ~ "Apurimac",
+          prov == "1104" ~ "Arequipa",
+          prov == "1105" ~ "Ayacucho",
+          prov == "1106" ~ "Cajamarca",
+          prov == "1107" ~ "Callao",
+          prov == "1108" ~ "Cusco",
+          prov == "1109" ~ "Huancavelica",
+          prov == "1110" ~ "Huanuco",
+          prov == "1111" ~ "Ica",
+          prov == "1112" ~ "Junin",
+          prov == "1113" ~ "La Libertad",
+          prov == "1114" ~ "Lambayeque",
+          prov == "1115" ~ "Lima",
+          prov == "1116" ~ "Loreto",
+          prov == "1118" ~ "Madre de Dios",
+          prov == "1118" ~ "Moquegua",
+          prov == "1119" ~ "Pasco",
+          prov == "1120" ~ "Piura",
+          prov == "1121" ~ "Puno",
+          prov == "1122" ~ "San Martin",
+          prov == "1123" ~ "Tacna",
+          prov == "1124" ~ "Tumbes",
+          prov == "1125" ~ "Ucayali",
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov %in% c("Amazonas", "Loreto", "San Martin", "Ucayali", "Madre de Dios") ~ "PER_Selva",
+      prov %in% c("Ica", "Arequipa", "Moquegua", "Tacna") ~ "PER_Costa_Sur",
+      prov %in% c("Puno", "Cusco", "Apurimac", "Ayacucho", "Huancavelica") ~ "PER_Sierra_Sur",
+      prov %in% c("Junin", "Pasco", "Huanuco", "Ancash", "Ica Sierra Centro", "Lima Sierra Centro", "La Libertad Sierra Centro") ~ "PER_Sierra_Centro",
+      prov == "Callao" | prov == "Lima" ~ "PER_Lima_Metropolitana",
+      prov %in% c("Tumbes", "Piura", "Lambayeque", "Ancash Costa Norte", "La Libertad", "Lima Costa Norte", "Cajamarca Costa Norte") ~ "PER_Costa_Norte",
+      prov %in% c("Piura Sierra Norte", "Cajamarca", "La Libertad Sierra Norte") ~ "PER_Sierra_Norte",
+    )
+  )
+  
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+map %>% 
+  filter(name_1 %in% c("Cajamarca", "Piura", "La Libertad")) %>% # 
+  ggplot() + geom_sf(aes(fill = name_1), alpha = .3) + 
+  geom_sf_label(aes(label = name_2))
+
+map %>% 
+  ggplot() +
+  geom_sf() +
+  geom_sf_label(aes(label = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Uruguay ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_URY_shp/gadm36_URY_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "URY") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov)
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+    mutate(
+      prov = case_when(
+        prov == "1401" ~ "Montevideo",
+        prov == "1402" ~ "Artigas",
+        prov == "1403" ~ "Canelones",
+        prov == "1404" ~ "Cerro Largo",
+        prov == "1405" ~ "Colonia",
+        prov == "1406" ~ "Durazno",
+        prov == "1407" ~ "Florida",
+        prov == "1408" ~ "Lavalleja",
+        prov == "1409" ~ "Maldonado",
+        prov == "1410" ~ "Paysandu",
+        prov == "1411" ~ "Rio Negro",
+        prov == "1412" ~ "Rivera",
+        prov == "1413" ~ "Rocha",
+        prov == "1414" ~ "Salto",
+        prov == "1415" ~ "San Jose",
+        prov == "1416" ~ "Soriano",
+        prov == "1417" ~ "Tacuarembo",
+        prov == "1418" ~ "Treinta y Tres",
+        
+        TRUE ~ as.character(prov)
+      ),
+      prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+    ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = if_else(is.na(country_region), "URY_Interior", country_region)
+  )
+  
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+# map %>% ggplot() + geom_sf(aes(fill = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Haiti ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_HTI_shp/gadm36_HTI_2.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    name_1 = if_else(name_2 == "Port-au-Prince", "Metro Area", name_1),
+  ) %>% 
+  group_by(name_1) %>% 
+  summarise(do_union = T) %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "HTI") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov)
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = case_when(
+          TRUE ~ as.character(prov)
+        ),
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise()
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov %in% c("Grand'Anse", "Sud", "Nippes", "Sud-Est") ~ "HTI_Southern", 
+      prov %in% c("Nord-Ouest", "Nord", "Nord-Est") ~ "HTI_Northern", 
+      prov == "Ouest" ~ "HTI_Rest_of_the_West",
+      prov == "Metro Area" ~ "HTI_Metro_Area",
+      prov %in% c("L'Artibonite", "Centre") ~ "HTI_Central", 
+    )
+  )
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+map %>% ggplot() + 
+  geom_sf() +
+  geom_sf_label(aes(label = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+# Venezuela ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_VEN_shp/gadm36_VEN_1.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    prov = stringi::stri_trans_general(name_1, "Latin-ASCII")
+  ) %>% 
+  select(prov, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "VEN") %>% 
+  mutate(
+    prov = fct_drop(prov)
+  )
+
+table(lapop_cntry$prov)
+table(map$prov)
+
+# Code singularities
+foo <- 
+  map %>% 
+  filter(prov != "Dependencias Federales") %>% 
+  left_join(
+    lapop_cntry %>% 
+      mutate(
+        prov = stringi::stri_trans_general(prov, "Latin-ASCII")
+      ) %>% 
+      group_by(estratopri, country_region, prov) %>% 
+      summarise() 
+  ) %>% 
+  mutate(
+    country_region = case_when(
+      prov %in% c("Amazonas", "Bolivar", "Delta Amacuro") ~ "VEN_Guayana",
+      prov %in% c("Anzoategui", "Monagas", "Sucre", "Nueva Esparta") ~ "VEN_Oriental",
+      prov %in% c("Anzoategui", "Monagas", "Sucre", "Nueva Esparta") ~ "VEN_Oriental",
+      prov %in% c("Zulia") ~ "VEN_Zuliana",
+      prov %in% c("Tachira", "Merida", "Trujillo") ~ "VEN_Andes",
+      prov %in% c("Lara", "Yaracuy", "Falcon") ~ "VEN_Centro_Occidental",
+      prov %in% c("Carabobo", "Aragua") ~ "VEN_Centro",
+      prov %in% c("Vargas", "Distrito Capital", "Miranda") ~ "VEN_Capital",
+      TRUE ~ "VEN_Llanos",
+    )
+  )
+
+
+foo1 <- 
+  foo %>% 
+  st_as_sf() %>% 
+  group_by(country_region) %>% 
+  summarise(do_union = T)
+
+# X11(type = "cairo")
+map %>% ggplot() + geom_sf() +
+  ggsflabel::geom_sf_label_repel(aes(label = prov))
+
+# X11(type = "cairo")
+# foo1 %>% ggplot() + geom_sf(aes(fill = country_region))
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(foo1)
+
+## Non-within stratification ----
+# Belize ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_BLZ_shp/gadm36_BLZ_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "BLZ") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# Guyana ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_GUY_shp/gadm36_GUY_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "GUY") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# Suriname ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_SUR_shp/gadm36_SUR_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "SUR") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# Trinidad and Tobago ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_TTO_shp/gadm36_TTO_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "TTO") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# Bahamas ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_BHS_shp/gadm36_BHS_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "BHS") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# Barbados ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_BRB_shp/gadm36_BRB_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "BRB") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# Dominica ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_DMA_shp/gadm36_DMA_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "DMA") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+
+# Grenada ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_GRD_shp/gadm36_GRD_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "GRD") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# St. Kitts and Nevis ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_KNA_shp/gadm36_KNA_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "KNA") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# St. Lucia ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_LCA_shp/gadm36_LCA_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "LCA") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+# St. Vincent ----
+path <- "/Users/billywoom/Dropbox/Data/GADM/gadm36_VCT_shp/gadm36_VCT_0.shp"
+
+map <- 
+  st_read(path) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    country_region = stringi::stri_trans_general(gid_0, "Latin-ASCII")
+  ) %>% 
+  select(country_region, geometry)
+
+map %>% ggplot() + geom_sf()
+
+lapop_cntry <- 
+  lapop %>% 
+  filter(countrycode == "VCT") %>% 
+  mutate(
+    prov = fct_drop(prov),
+    estratopri = fct_drop(estratopri),
+    municipio = fct_drop(municipio),
+  )
+
+lapop_gadm <- 
+  lapop_gadm %>% 
+  rbind(map)
+
+
+### Regional shape ----
+lapop_gadm %>% 
+  ggplot() + geom_sf()
+
+lapop_gadm <- 
+lapop_gadm %>% 
+  mutate(
+    countrycode = str_sub(country_region, 1,3)
+  ) %>% 
+  select(countrycode, country_region, geometry)
+
+setwd("~/Dropbox/Papers/UCR/Datos")
+st_write(lapop_gadm, "lapop_gadm.shp")
+
+
+

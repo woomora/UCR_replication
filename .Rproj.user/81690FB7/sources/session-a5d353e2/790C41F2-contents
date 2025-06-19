@@ -1,0 +1,238 @@
+
+lapop_mex <- 
+  lapop_analysis |> 
+  filter(countrycode == "MEX")
+
+proder <- read_rds("data/derived/proder.rds")
+
+## LAPOP ----
+edc_lapop <- 
+  feols(
+    scale(edc) ~ scale(colorr) | cluster_enumerator_id + age + sex + mothers_ed_isced, 
+    data = lapop_mex,
+    weights = ~ weight1500,
+    cluster = ~ cluster_enumerator_id
+  )
+
+abs_ed_lapop <- 
+  feols(
+    abs_ed_im ~ scale(colorr) | cluster_enumerator_id + age + sex + mothers_ed_isced, 
+    data = lapop_mex,
+    weights = ~ weight1500,
+    cluster = ~ cluster_enumerator_id
+  )
+
+## Proder ----
+# Years of schooling  ----
+edc_proder_int <- 
+feols(
+  scale(edc) ~ scale(color_int) | cp_mun^id_encuestador + edc_padres + edad + mujer, 
+  data = proder,
+  weights = ~ facinp,
+  cluster = ~ cp_mun^id_encuestador
+)
+
+edc_proder_resp <- 
+feols(
+  scale(edc) ~ scale(color_resp) | cp_mun^id_encuestador + edc_padres + edad + mujer, 
+  data = proder,
+  weights = ~ facinp,
+  cluster = ~ cp_mun^id_encuestador
+)
+
+edc_proder_ita <- 
+feols(
+  scale(edc) ~ scale(ita_invsd) | cp_mun^id_encuestador + edc_padres + edad + mujer, 
+  data = proder,
+  weights = ~ facinp,
+  cluster = ~ cp_mun^id_encuestador
+)
+
+# Absolute educational mobility ----
+abs_ed_proder_int <- 
+feols(
+  abs_ed_im ~ scale(color_int) | cp_mun^id_encuestador + edc_padres + edad + mujer, 
+  data = proder,
+  weights = ~ facinp,
+  cluster = ~ cp_mun^id_encuestador
+)
+
+abs_ed_proder_resp <- 
+feols(
+  abs_ed_im ~ scale(color_resp) | cp_mun^id_encuestador + edc_padres + edad + mujer, 
+  data = proder,
+  weights = ~ facinp,
+  cluster = ~ cp_mun^id_encuestador
+)
+
+abs_ed_proder_ita <- 
+feols(
+  abs_ed_im ~ scale(ita_invsd) | cp_mun^id_encuestador + edc_padres + edad + mujer, 
+  data = proder,
+  weights = ~ facinp,
+  cluster = ~ cp_mun^id_encuestador
+)
+
+## PRODER + More controls ----
+# Years of schooling  ----
+edc_proder_int_c <- 
+  feols(
+    scale(edc) ~ scale(color_int) | cp_mun^id_encuestador + edc_padres + edad + mujer + barrio14yo + father_ocup14yo, 
+    data = proder,
+    weights = ~ facinp,
+    cluster = ~ cp_mun^id_encuestador
+  )
+
+edc_proder_resp_c <- 
+  feols(
+    scale(edc) ~ scale(color_resp) | cp_mun^id_encuestador + edc_padres + edad + mujer + barrio14yo + father_ocup14yo, 
+    data = proder,
+    weights = ~ facinp,
+    cluster = ~ cp_mun^id_encuestador
+  )
+
+edc_proder_ita_c <- 
+  feols(
+    scale(edc) ~ scale(ita_invsd) | cp_mun^id_encuestador + edc_padres + edad + mujer + barrio14yo + father_ocup14yo, 
+    data = proder,
+    weights = ~ facinp,
+    cluster = ~ cp_mun^id_encuestador
+  )
+
+
+
+
+
+# Absolute educational mobility  ----
+abs_ed_proder_int_c <- 
+  feols(
+    abs_ed_im ~ scale(color_int) | cp_mun^id_encuestador + edc_padres + edad + mujer + barrio14yo + father_ocup14yo, 
+    data = proder,
+    weights = ~ facinp,
+    cluster = ~ cp_mun^id_encuestador
+  )
+
+abs_ed_proder_resp_c <- 
+  feols(
+    abs_ed_im ~ scale(color_resp) | cp_mun^id_encuestador + edc_padres + edad + mujer + barrio14yo + father_ocup14yo, 
+    data = proder,
+    weights = ~ facinp,
+    cluster = ~ cp_mun^id_encuestador
+  )
+
+abs_ed_proder_ita_c <- 
+  feols(
+    abs_ed_im ~ scale(ita_invsd) | cp_mun^id_encuestador + edc_padres + edad + mujer + barrio14yo + father_ocup14yo, 
+    data = proder,
+    weights = ~ facinp,
+    cluster = ~ cp_mun^id_encuestador
+  )
+
+## Table ----
+
+# Dictionary
+setFixest_dict(
+  dict = c(
+    "scale(colorr)" = "Skin tone (z-score)",
+    "scale(color_int)" = "Skin tone (z-score)",
+    "scale(color_resp)" = "Skin tone (z-score)",
+    "scale(ita_invsd)" = "Skin tone (z-score)"
+  )
+)
+
+# Baseline results 
+# Combine the results into an etable with no significance stars and wrapped in threeparttable
+etable(
+  # Years of schooling (edc)
+  edc_lapop,
+  edc_proder_int,
+  edc_proder_int_c,
+  
+  # Absolute Educational Mobility (abs_ed_im)
+  abs_ed_lapop,
+  abs_ed_proder_int,
+  abs_ed_proder_int_c,
+  
+  # Additional arguments
+  tex = TRUE,  # Output in LaTeX format
+  tpt = T,
+  signif.code = NA,  # Remove significance stars
+  digits = 3,
+  digits.stats = 4
+)
+
+# Mean dependent variables
+round(mean(lapop_mex$edc, na.rm = T), 2)
+round(mean(proder$edc, na.rm = T), 2)
+round(mean(lapop_mex$abs_ed_im, na.rm = T), 2)
+round(mean(proder$abs_ed_im, na.rm = T), 2)
+
+round(sd(lapop_mex$edc, na.rm = T), 2)
+round(sd(proder$edc, na.rm = T), 2)
+round(sd(lapop_mex$abs_ed_im, na.rm = T), 2)
+round(sd(proder$abs_ed_im, na.rm = T), 2)
+
+
+
+# Function to compare two fixest models' coefficients
+compare_fixest_coefficients <- function(model1, model2) {
+  # Extract coefficients and standard errors for the specified variable from each model
+  beta1 <- model1$coefficients[1]
+  se1 <- model1$se[1]
+  
+  beta2 <- model2$coefficients[1]
+  se2 <- model2$se[1]
+  
+  # Calculate the z-statistic
+  z_stat <- (beta1 - beta2) / sqrt(se1^2 + se2^2)
+  z_stat <- unname(z_stat)
+  
+  # Calculate the p-value (two-tailed test)
+  p_value <- round(2 * pnorm(-abs(z_stat)), 4)
+  p_value <- unname(p_value)
+  
+  # Return the z-statistic and p-value
+  return(list(z_stat = z_stat, p_value = p_value))
+}
+
+compare_fixest_coefficients(edc_lapop, edc_proder_int)$p_value
+
+compare_fixest_coefficients(abs_ed_lapop, abs_ed_proder_int)$p_value
+
+# Panel (b): Respondents perceptions
+etable(
+  # Years of schooling (edc)
+  edc_proder_resp,
+  edc_proder_resp_c,
+  
+  # Absolute Educational Mobility (abs_ed_im)
+  abs_ed_proder_resp,
+  abs_ed_proder_resp_c,
+  
+  # Additional arguments
+  tex = TRUE,  # Output in LaTeX format
+  tpt = T,
+  signif.code = NA,  # Remove significance stars
+  digits = 3,
+  digits.stats = 3,
+  fitstat = ~ my + n + r2 + ar2
+)
+
+# Panel (c): Machine-assesed skin tone measures
+etable(
+  # Years of schooling (edc)
+  edc_proder_ita,
+  edc_proder_ita_c,
+  
+  # Absolute Educational Mobility (abs_ed_im)
+  abs_ed_proder_ita,
+  abs_ed_proder_ita_c,
+  
+  # Additional arguments
+  tex = TRUE,  # Output in LaTeX format
+  tpt = T,
+  signif.code = NA,  # Remove significance stars
+  digits = 3,
+  digits.stats = 3,
+  fitstat = ~ my + n + r2 + ar2
+)
