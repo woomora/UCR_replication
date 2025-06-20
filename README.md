@@ -28,7 +28,7 @@ Main script that executes the full replication pipeline: loads data, runs regres
 
 Helper functions for data cleaning, transformation, modeling, and visualization. Called internally by the other scripts.
 
-### `UCR_lapop_source_to_derived.R`
+### `UCR_lapop_merge.R`
 
 This script processes LAPOP survey files to create a harmonized, cross-country analytical dataset. It performs the following tasks:
 
