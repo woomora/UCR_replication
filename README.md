@@ -4,8 +4,7 @@
 
 This repository contains the replication materials for the paper:
 
-**L. Guillermo Woo-Mora (2025)**  
-_Unveiling the Cosmic Race: Skin Tone and Intergenerational Economic Disparities in Latin America and the Caribbean_
+[**L. Guillermo Woo-Mora (2025)** _Unveiling the Cosmic Race: Skin Tone and Intergenerational Economic Disparities in Latin America and the Caribbean_](https://doi.org/10.1016/j.jdeveco.2025.103594)
 
 This study presents the most comprehensive cross-country analysis to date of how **skin tone**, distinct from self-reported race, correlates with **income**, **human capital**, and **educational intergenerational mobility** (IM) in 25 Latin American and Caribbean countries. The analysis leverages enumerator-assessed and machine-rated skin tone data from LAPOP and PRODER.
 
@@ -199,10 +198,16 @@ If you use this replication package or build upon the findings in your research,
 ### BibTeX
 
 ```bibtex
-@article{WooMora2025,
-  author    = {L. Guillermo Woo-Mora},
-  title     = {Unveiling the Cosmic Race: Skin Tone and Intergenerational Economic Disparities in Latin America and the Caribbean},
-  journal   = {Journal of Development Economics},
-  year      = {Forthcoming}
+@article{Woo-Mora2025,
+   author = {L. Guillermo Woo-Mora},
+   doi = {10.1016/J.JDEVECO.2025.103594},
+   issn = {0304-3878},
+   journal = {Journal of Development Economics},
+   month = {8},
+   pages = {103594},
+   publisher = {North-Holland},
+   title = {Unveiling the Cosmic Race: Skin tone and intergenerational economic disparities in Latin America and the Caribbean},
+   url = {https://linkinghub.elsevier.com/retrieve/pii/S0304387825001452},
+   year = {2025}
 }
 ```
