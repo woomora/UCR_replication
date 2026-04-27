@@ -191,12 +191,6 @@ Key attached packages:
 
 If you use this replication package or build upon the findings in your research, please cite the article as follows:
 
-**L. Guillermo Woo-Mora (Forthcoming)**  
-*"Unveiling the Cosmic Race: Skin Tone and Intergenerational Economic Disparities in Latin America and the Caribbean."*  
-*Journal of Development Economics* (Forthcoming).
-
-### BibTeX
-
 ```bibtex
 @article{Woo-Mora2026,
    author = {L. Guillermo Woo-Mora},
